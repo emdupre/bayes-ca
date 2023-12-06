@@ -1,0 +1,9 @@
+.DS_Store
+build/
+__pycache__
+*.egg-info/
+*.cpython*.so
+.vscode/
+*.h5
+*.c
+*.nilearn-cache/

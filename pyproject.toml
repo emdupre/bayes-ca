@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bayes_ca"
+version = "0.0.1"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+]
+requires-python = ">3.10"
+dependencies = [
+    "click",
+    "Cython",
+    "dynamax",
+    "h5py",
+    "jax",
+    "joblib",
+    "matplotlib",
+    "nibabel",
+    "nilearn",
+    "numpy",
+    "optax",
+    "scikit-learn",
+    "scipy",
+    "tqdm"
+]
+
+[project.optional-dependencies]
+dev = [
+    'pre-commit',
+    'black'
+]
+
+[tool.black]
+line-length = 98
+
+[tool.setuptools]
+packages = ["bayes_ca"]
+zip-safe = false
