@@ -30,7 +30,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     'pre-commit',
-    'black'
+    'black',
+    'pytest'
 ]
 
 [tool.black]

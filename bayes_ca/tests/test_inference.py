@@ -33,16 +33,17 @@ zs, mus = sample_cp_prior(this_key, num_timesteps, hazard_rates, mu0, sigmasq0)
 this_key, key = jr.split(key)
 xs = mus + jnp.sqrt(sigmasq) * jr.normal(this_key, mus.shape)
 lls = compute_pred_log_likes(xs, K, mu0, sigmasq0, sigmasq)
+_, _, transition_probs = hmm_smoother(hazard_rates, lls)
 
 
-def test_log_normalizers(hazard_rates, lls):
+def test_log_normalizers():
     """ """
     forward_normalizer, _, _ = hmm_filter(hazard_rates, lls)
     backward_normalizer, _ = hmm_backward_filter(hazard_rates, lls)
     assert jnp.isclose(forward_normalizer, backward_normalizer, atol=1.0)
 
 
-def test_kernel_conv(hazard_rates, lls, K):
+def test_kernel_conv():
     """ """
     _, _, transition_probs = hmm_smoother(hazard_rates, lls)
     kernel = jnp.tril(jnp.ones((K + 1, K + 1)))[None, None, :, :]  # OIKK
@@ -59,7 +60,7 @@ def test_kernel_conv(hazard_rates, lls, K):
     )
 
 
-def test_posterior_means(xs, K, transition_probs):
+def test_posterior_means():
     """ """
     conditional_means = compute_conditional_means(xs, K)
     inpt = (transition_probs * conditional_means).T  # KT
