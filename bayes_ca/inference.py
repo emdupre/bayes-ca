@@ -108,9 +108,7 @@ def hmm_filter(hazard_rates, pred_log_likes):
     initial_dist = jnp.zeros(K + 1)
     initial_dist = initial_dist.at[0].set(1.0)
     carry = (0.0, initial_dist)
-    (log_normalizer, _), (filtered_probs, predicted_probs) = scan(
-        _step, carry, pred_log_likes
-    )
+    (log_normalizer, _), (filtered_probs, predicted_probs) = scan(_step, carry, pred_log_likes)
 
     return log_normalizer, filtered_probs, predicted_probs
 
@@ -131,17 +129,13 @@ def hmm_backward_filter(hazard_rates, pred_log_likes):
         return (log_normalizer, next_backward_pred_probs), backward_pred_probs
 
     carry = (0.0, jnp.ones(K + 1))
-    (log_normalizer, _), backward_pred_probs = scan(
-        _step, carry, pred_log_likes, reverse=True
-    )
+    (log_normalizer, _), backward_pred_probs = scan(_step, carry, pred_log_likes, reverse=True)
     return log_normalizer, backward_pred_probs
 
 
 def hmm_smoother(hazard_rates, pred_log_likes):
     """ """
-    log_normalizer, filtered_probs, predicted_probs = hmm_filter(
-        hazard_rates, pred_log_likes
-    )
+    log_normalizer, filtered_probs, predicted_probs = hmm_filter(hazard_rates, pred_log_likes)
     _, backward_pred_probs = hmm_backward_filter(hazard_rates, pred_log_likes)
 
     # Compute smoothed probabilities
@@ -177,20 +171,37 @@ def hmm_posterior_sample(key, hazard_rates, pred_log_likes):
     """
     num_timesteps, num_states = pred_log_likes.shape
 
-    # Run the HMM filter
-    log_normalizer, filtered_probs, _ = hmm_filter(hazard_rates, pred_log_likes)
-    _, backward_pred_probs = hmm_backward_filter(hazard_rates, pred_log_likes)
+    # Run the HMM smoother
+    _, smoothed_probs, transition_probs = hmm_smoother(hazard_rates, pred_log_likes)
 
-    # Compute smoothed probabilities
-    smoothed_probs = filtered_probs * backward_pred_probs
-    norm = smoothed_probs.sum(axis=1, keepdims=True)
-    smoothed_probs /= norm
+    def _step(carry, args):
+        next_state = carry
+        _key, transition_probs, smoothed_probs = args
 
-    f = vmap(partial(jr.choice, a=num_states))
-    states = f(jr.split(key, num_timesteps)[::-1], p=smoothed_probs[::-1])
+        # Sample current state
+        # note: if z_{t+1} > 0, then z_t must equal (z_{t+1} - 1)
+        #       only uncertainty is when z_{t+1} = 0.
+        if transition_probs > 0:
+            state = next_state
+        elif transition_probs == 0:
+            state = jr.choice(_key, a=num_states, p=smoothed_probs)
+
+        return state, state
+
+    # Run the HMM smoother
+    rngs = jr.split(key, num_timesteps)[::-1]
+    rev_smooth_probs = smoothed_probs[::-1]
+    rev_trans_probs = transition_probs[::-1]
+    last_state = jr.choice(rngs[0], a=num_states, p=rev_smooth_probs[0])
+    args = (rngs[1:], rev_trans_probs[1:], rev_smooth_probs[1:])
+    _, rev_states = scan(_step, last_state, args)
+
+    # f = vmap(partial(jr.choice, a=num_states))
+    # states = f(jr.split(key, num_timesteps)[::-1], p=smoothed_probs[::-1])
 
     # Reverse the states and return
-    return log_normalizer, states[::-1]
+    states = jnp.concatenate([rev_states[::-1], jnp.array([last_state])])
+    return states
 
 
 def compute_conditional_means(xs, K):
@@ -239,4 +250,3 @@ def sample_cp_prior(key, num_timesteps, hazard_rates, mu0, sigmasq0):
     _, (zs, mus) = scan(_step, initial_carry, jr.split(key, num_timesteps))
 
     return zs, mus
-
