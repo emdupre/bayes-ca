@@ -172,36 +172,34 @@ def hmm_posterior_sample(key, hazard_rates, pred_log_likes):
     num_timesteps, num_states = pred_log_likes.shape
 
     # Run the HMM smoother
-    _, smoothed_probs, transition_probs = hmm_smoother(hazard_rates, pred_log_likes)
+    _, filtered_probs = hmm_filter(hazard_rates, pred_log_likes)
 
     def _step(carry, args):
-        next_state = carry
-        _key, transition_probs, smoothed_probs = args
+        run_length = carry
+        _key, filtered_probs = args
 
-        # Sample current state
+        # calculate smoothed probabilities and renormalize
+        smoothed_probs = filtered_probs * hazard_rates
+        smoothed_probs /= smoothed_probs.sum()
+
+        # Sample current run_length
         # note: if z_{t+1} > 0, then z_t must equal (z_{t+1} - 1)
         #       only uncertainty is when z_{t+1} = 0.
-        if transition_probs > 0:
-            state = next_state
-        elif transition_probs == 0:
-            state = jr.choice(_key, a=num_states, p=smoothed_probs)
+        run_length = jnp.where(
+            run_length > 0, run_length - 1, jr.choice(_key, a=num_states, p=smoothed_probs)
+        )
 
-        return state, state
+        return run_length, run_length
 
     # Run the HMM smoother
-    rngs = jr.split(key, num_timesteps)[::-1]
-    rev_smooth_probs = smoothed_probs[::-1]
-    rev_trans_probs = transition_probs[::-1]
-    last_state = jr.choice(rngs[0], a=num_states, p=rev_smooth_probs[0])
-    args = (rngs[1:], rev_trans_probs[1:], rev_smooth_probs[1:])
-    _, rev_states = scan(_step, last_state, args)
+    rngs = jr.split(key, num_timesteps)
+    last_length = jr.choice(rngs[-1], a=num_states, p=filtered_probs[-1])
+    args = (rngs[:-1], filtered_probs[:-1])
+    _, run_lengths = scan(_step, last_length, args, reverse=True)
 
-    # f = vmap(partial(jr.choice, a=num_states))
-    # states = f(jr.split(key, num_timesteps)[::-1], p=smoothed_probs[::-1])
-
-    # Reverse the states and return
-    states = jnp.concatenate([rev_states[::-1], jnp.array([last_state])])
-    return states
+    # Stack and return the run lengths
+    run_lengths = jnp.concatenate([run_lengths, jnp.array([last_length])])
+    return run_lengths
 
 
 def compute_conditional_means(xs, K):
