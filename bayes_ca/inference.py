@@ -202,6 +202,55 @@ def hmm_posterior_sample(key, hazard_rates, pred_log_likes):
     return run_lengths
 
 
+def hmm_posterior_mode(
+    initial_distribution,
+    hazard_rates,
+    pred_log_likes,
+):
+    r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
+
+    Args:
+        initial_distribution: $p(z_1 \mid u_1, \theta)$
+        hazard_rates: $p(z_{t+1} = j \mid z_t = i, \theta)$
+        log_likelihoods: $p(y_t \mid z_t, u_t, \theta)$ for $t=1,\ldots, T$.
+
+    Returns:
+        most likely state sequence
+
+    """
+    num_timesteps, num_states = pred_log_likes.shape
+
+    # # calculate smoothed probabilities and renormalize
+    # _, filtered_probs = hmm_filter(hazard_rates, pred_log_likes)
+    # smoothed_probs = filtered_probs * hazard_rates
+    # smoothed_probs /= smoothed_probs.sum()
+
+    # Run the backward pass
+    def _backward_pass(best_next_score, t):
+        # FIXME : We can be more intelligent in using the hazard rates
+        # since we know they are sparse.
+        scores = jnp.log(hazard_rates) + best_next_score + pred_log_likes[t + 1]
+        best_next_state = jnp.argmax(scores, axis=1)
+        best_next_score = jnp.max(scores, axis=1)
+        return best_next_score, best_next_state
+
+    best_second_score, best_next_states = scan(
+        _backward_pass, jnp.zeros(num_states), jnp.arange(num_timesteps - 1), reverse=True
+    )
+
+    # Run the forward pass
+    def _forward_pass(state, best_next_state):
+        next_state = best_next_state[state]
+        return next_state, next_state
+
+    first_state = jnp.argmax(
+        jnp.log(initial_distribution) + pred_log_likes[0] + best_second_score
+    )
+    _, states = scan(_forward_pass, first_state, best_next_states)
+
+    return jnp.concatenate([jnp.array([first_state]), states])
+
+
 def compute_conditional_means(xs, K):
     """
     Compute conditional means of mu_t given runs of varying length ending at time t
