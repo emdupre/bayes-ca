@@ -98,6 +98,18 @@ def main(
     plt.plot(xs, "r.", alpha=0.5)
     plt.plot(posterior_means, "k-", lw=1, label="posterior mean")
     plt.xlim(800, 1000)
+
+    post_mode = hmm_posterior_mode(initial_dist, hazard_rates, lls)
+
+    fig, axs = plt.subplots(2, 1, figsize=(10, 9), sharex=True)
+    axs[0].plot(mus)
+    axs[0].plot(xs, "r.", alpha=0.5)
+    axs[0].grid(True)
+    axs[1].plot(zs)
+    axs[1].plot(post_mode, "r.", alpha=0.6)
+    axs[1].set_xlim(400, 600)
+    axs[1].grid(True)
+
     plt.show()
 
 

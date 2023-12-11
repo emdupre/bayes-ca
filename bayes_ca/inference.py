@@ -199,7 +199,7 @@ def hmm_posterior_sample(key, hazard_rates, pred_log_likes):
 
 def hmm_posterior_mode(
     initial_distribution,
-    lmbda,
+    hazard_rates,
     pred_log_likes,
 ):
     r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
@@ -211,33 +211,27 @@ def hmm_posterior_mode(
 
     Returns:
         most likely state sequence
-
     """
     num_timesteps, num_states = pred_log_likes.shape
 
-    # # calculate smoothed probabilities and renormalize
-    # _, filtered_probs = hmm_filter(hazard_rates, pred_log_likes)
-    # smoothed_probs = filtered_probs * hazard_rates
-    # smoothed_probs /= smoothed_probs.sum()
+    # Note:
+    #     initial_dist = jnp.zeros(num_states, dtype=float)
+    #     initial_dist = initial_dist.at[0].set(1.0)
 
     # Run the backward pass
-    def _backward_pass(best_next_score, t):
-        # FIXME : We can be more intelligent in using the hazard rates
-        # since we know they are sparse.
-        A = jnp.zeros((num_states, num_states))
-        A = A.at[:, 0].set(lmbda)
-        A = A.at[num_states, 0].set(1)
-        rows, cols = jnp.diag_indices_from(A)
-        A = A.at[rows[:-1], cols[1:]].set(1 - lmbda)
-        A = A.at[num_states, num_states].set(0)
+    def _backward_pass(best_next_score, next_log_likes):
+        X = best_next_score + next_log_likes
+        scores = jnp.stack(
+            [jnp.log(hazard_rates[:-1]) + X[0], jnp.log(1 - hazard_rates[:-1]) + X[1:]]
+        )
 
-        scores = jnp.log(A) + best_next_score + pred_log_likes[t + 1]
-        best_next_state = jnp.argmax(scores, axis=1)
-        best_next_score = jnp.max(scores, axis=1)
-        return best_next_score, best_next_state
+        best_idx = jnp.argmax(scores, axis=0)
+        best_next_state = jnp.where(best_idx == 0, 0, jnp.arange(1, num_states))
+        best_next_score = jnp.max(scores, axis=0)
+        return jnp.append(best_next_score, X[0]), jnp.append(best_next_state, 0)
 
     best_second_score, best_next_states = scan(
-        _backward_pass, jnp.zeros(num_states), jnp.arange(num_timesteps - 1), reverse=True
+        _backward_pass, jnp.zeros(num_states), pred_log_likes[1:], reverse=True
     )
 
     # Run the forward pass
@@ -251,10 +245,6 @@ def hmm_posterior_mode(
     _, states = scan(_forward_pass, first_state, best_next_states)
 
     return jnp.concatenate([jnp.array([first_state]), states])
-
-
-initial_dist = tfd.Geometric(probs=lmbda).sample(seed=key)
-hmm_posterior_mode(initial_dist, hazard_rates, lls)
 
 
 def compute_conditional_means(xs, K):
