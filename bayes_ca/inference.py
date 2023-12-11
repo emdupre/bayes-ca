@@ -1,11 +1,6 @@
-from functools import partial
-
 import jax.numpy as jnp
 import jax.random as jr
-import matplotlib.pyplot as plt
-
-from jax import vmap
-from jax.lax import scan, conv
+from jax.lax import scan
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
@@ -204,7 +199,7 @@ def hmm_posterior_sample(key, hazard_rates, pred_log_likes):
 
 def hmm_posterior_mode(
     initial_distribution,
-    hazard_rates,
+    lmbda,
     pred_log_likes,
 ):
     r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
@@ -229,7 +224,14 @@ def hmm_posterior_mode(
     def _backward_pass(best_next_score, t):
         # FIXME : We can be more intelligent in using the hazard rates
         # since we know they are sparse.
-        scores = jnp.log(hazard_rates) + best_next_score + pred_log_likes[t + 1]
+        A = jnp.zeros((num_states, num_states))
+        A = A.at[:, 0].set(lmbda)
+        A = A.at[num_states, 0].set(1)
+        rows, cols = jnp.diag_indices_from(A)
+        A = A.at[rows[:-1], cols[1:]].set(1 - lmbda)
+        A = A.at[num_states, num_states].set(0)
+
+        scores = jnp.log(A) + best_next_score + pred_log_likes[t + 1]
         best_next_state = jnp.argmax(scores, axis=1)
         best_next_score = jnp.max(scores, axis=1)
         return best_next_score, best_next_state
@@ -249,6 +251,10 @@ def hmm_posterior_mode(
     _, states = scan(_forward_pass, first_state, best_next_states)
 
     return jnp.concatenate([jnp.array([first_state]), states])
+
+
+initial_dist = tfd.Geometric(probs=lmbda).sample(seed=key)
+hmm_posterior_mode(initial_dist, hazard_rates, lls)
 
 
 def compute_conditional_means(xs, K):
