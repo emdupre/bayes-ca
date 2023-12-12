@@ -6,11 +6,13 @@ import matplotlib.pyplot as plt
 from tensorflow_probability.substrates import jax as tfp
 
 from bayes_ca.inference import (
-    sample_gaussian_cp_model,
+    _compute_gaussian_stats,
     _compute_gaussian_lls,
-    compute_conditional_means,
     cp_filter,
     cp_smoother,
+    cp_posterior_mode,
+    gaussian_cp_smoother,
+    sample_gaussian_cp_model,
 )
 
 tfd = tfp.distributions
@@ -65,20 +67,21 @@ def main(
     axs[1].set_xlim(0, num_timesteps)
 
     # Experiment 1: Compute log-likelihood of simulated data
-    lls = _compute_gaussian_lls(xs, K, mu0, sigmasq0, sigmasq)
+    partial_sums, partial_counts = _compute_gaussian_stats(xs, K)
+    lls = _compute_gaussian_lls(xs, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
     fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     axs[0].plot(mus)
     im = axs[1].imshow(lls.T, aspect="auto")
     plt.colorbar(im)
 
-    log_normalizer, filtered_probs, predicted_probs = cp_filter(hazard_rates, lls)
+    _, filtered_probs, predicted_probs = cp_filter(hazard_rates, lls)
     fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     axs[0].plot(mus)
     im = axs[1].imshow(filtered_probs.T, aspect="auto", origin="lower", cmap="Greys")
     axs[1].set_xlim(800, 1000)
 
     # Experiment 2: Backward filtering
-    log_normalizer, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
+    _, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
     fig, axs = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
     axs[0].plot(mus)
     axs[0].plot(xs, "r.", alpha=0.5)
@@ -87,19 +90,17 @@ def main(
     axs[2].set_xlim(800, 1000)
 
     # Experiment 3: Posterior means
-    conditional_means = compute_conditional_means(xs, K)
-    # Make a convolution kernel to compute the posterior marginal means
-    kernel = jnp.tril(jnp.ones((K + 1, K + 1)))[None, None, :, :]  # OIKK
-    inpt = (transition_probs * conditional_means).T  # KT
-    inpt = inpt[None, None, :, :]  # NCKT
-    posterior_means = conv(inpt, kernel, (1, 1), [(0, 0), (0, K)])[0, 0, 0]  # T
+    _, smoothed_probs, transition_probs, posterior_means = gaussian_cp_smoother(
+        xs, hazard_rates, mu0, sigmasq0, sigmasq
+    )
 
     plt.plot(mus, lw=3, label="true mu")
     plt.plot(xs, "r.", alpha=0.5)
     plt.plot(posterior_means, "k-", lw=1, label="posterior mean")
     plt.xlim(800, 1000)
 
-    post_mode = hmm_posterior_mode(initial_dist, hazard_rates, lls)
+    # Experiment 4: Posterior mode
+    post_mode = cp_posterior_mode(hazard_rates, lls)
 
     fig, axs = plt.subplots(2, 1, figsize=(10, 9), sharex=True)
     axs[0].plot(mus)

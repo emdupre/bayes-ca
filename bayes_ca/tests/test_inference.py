@@ -3,12 +3,13 @@ import jax.random as jr
 from jax.lax import conv
 
 from bayes_ca.inference import (
-    sample_gaussian_cp_model,
+    _compute_gaussian_stats,
     _compute_gaussian_lls,
-    compute_conditional_means,
-    cp_backward_filter,
     cp_filter,
+    cp_backward_filter,
     cp_smoother,
+    gaussian_cp_smoother,
+    sample_gaussian_cp_model,
 )
 
 # Test
@@ -32,7 +33,8 @@ zs, mus = sample_gaussian_cp_model(this_key, num_timesteps, hazard_rates, mu0, s
 # Sample noisy observations
 this_key, key = jr.split(key)
 xs = mus + jnp.sqrt(sigmasq) * jr.normal(this_key, mus.shape)
-lls = _compute_gaussian_lls(xs, K, mu0, sigmasq0, sigmasq)
+partial_sums, partial_counts = _compute_gaussian_stats(xs, K)
+lls = _compute_gaussian_lls(xs, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
 _, _, transition_probs = cp_smoother(hazard_rates, lls)
 
 
@@ -62,16 +64,14 @@ def test_kernel_conv():
 
 def test_posterior_means():
     """ """
-    conditional_means = compute_conditional_means(xs, K)
-    inpt = (transition_probs * conditional_means).T  # KT
-    inpt = inpt[None, None, :, :]  # NCKT
-    kernel = jnp.tril(jnp.ones((K + 1, K + 1)))[None, None, :, :]  # OIKK
-    posterior_means = conv(inpt, kernel, (1, 1), [(0, 0), (0, K)])[0, 0, 0]  # T
+    sigmasq_post = 1 / (1 / sigmasq0 + partial_counts / sigmasq)
+    mu_post = sigmasq_post * (mu0 / sigmasq0 + partial_sums / sigmasq)
+    _, _, _, posterior_means = gaussian_cp_smoother(xs, hazard_rates, mu0, sigmasq0, sigmasq)
 
     # Test against naive implementation
     t = 60
     foo = 0.0
     for k in range(K + 1):
         for i in range(min(k + 1, num_timesteps - 1)):
-            foo += transition_probs[t + i, k] * conditional_means[t + i, k]
+            foo += transition_probs[t + i, k] * mu_post[t + i, k]
     assert jnp.allclose(posterior_means[t], foo)
