@@ -3,12 +3,12 @@ import jax.random as jr
 from jax.lax import conv
 
 from bayes_ca.inference import (
-    sample_cp_prior,
-    compute_pred_log_likes,
+    sample_gaussian_cp_model,
+    _compute_gaussian_lls,
     compute_conditional_means,
-    hmm_backward_filter,
-    hmm_filter,
-    hmm_smoother,
+    cp_backward_filter,
+    cp_filter,
+    cp_smoother,
 )
 
 # Test
@@ -27,25 +27,25 @@ hazard_rates = hazard_rates.at[-1].set(1.0)
 
 # Sample the prior
 this_key, key = jr.split(key)
-zs, mus = sample_cp_prior(this_key, num_timesteps, hazard_rates, mu0, sigmasq0)
+zs, mus = sample_gaussian_cp_model(this_key, num_timesteps, hazard_rates, mu0, sigmasq0)
 
 # Sample noisy observations
 this_key, key = jr.split(key)
 xs = mus + jnp.sqrt(sigmasq) * jr.normal(this_key, mus.shape)
-lls = compute_pred_log_likes(xs, K, mu0, sigmasq0, sigmasq)
-_, _, transition_probs = hmm_smoother(hazard_rates, lls)
+lls = _compute_gaussian_lls(xs, K, mu0, sigmasq0, sigmasq)
+_, _, transition_probs = cp_smoother(hazard_rates, lls)
 
 
 def test_log_normalizers():
     """ """
-    forward_normalizer, _, _ = hmm_filter(hazard_rates, lls)
-    backward_normalizer, _ = hmm_backward_filter(hazard_rates, lls)
+    forward_normalizer, _, _ = cp_filter(hazard_rates, lls)
+    backward_normalizer, _ = cp_backward_filter(hazard_rates, lls)
     assert jnp.isclose(forward_normalizer, backward_normalizer, atol=1.0)
 
 
 def test_kernel_conv():
     """ """
-    _, _, transition_probs = hmm_smoother(hazard_rates, lls)
+    _, _, transition_probs = cp_smoother(hazard_rates, lls)
     kernel = jnp.tril(jnp.ones((K + 1, K + 1)))[None, None, :, :]  # OIKK
     assert jnp.allclose(
         conv(

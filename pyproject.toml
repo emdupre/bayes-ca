@@ -16,6 +16,7 @@ dependencies = [
     "dynamax",
     "h5py",
     "jax",
+    "jaxtyping",
     "joblib",
     "matplotlib",
     "nibabel",

@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import jax.random as jr
 from jax.lax import scan
+from jaxtyping import Array, Float, PyTree
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
@@ -53,38 +54,10 @@ def _backward_predict(probs, hazard_rates):
     return p
 
 
-def compute_suff_stats(xs, K):
-    """
-    Compute sufficient statistics for each timestep and run length.
-
-    Returns:
-        partial_sums: (T+1, K+1) array of sums x_{t-k:t-1} for k=0,...,K
-    """
-
-    def _step(sums, x):
-        """
-        sums: (K,) array of sums
-            sums[k] = \sum_{i=1}^k x_{t-i}    for k = 0,...,K-1
-        """
-        new_sums = jnp.roll(sums, 1)
-        new_sums += x
-        new_sums = new_sums.at[0].set(0.0)
-        return new_sums, sums
-
-    _, partial_sums = scan(_step, jnp.zeros(K + 1), xs)
-    return partial_sums
-
-
-def compute_pred_log_likes(xs, K, mu0, sigmasq0, sigmasq):
-    partial_sums = compute_suff_stats(xs, K)
-
-    sigmasq_post = 1 / (1 / sigmasq0 + jnp.arange(K + 1) / sigmasq)
-    mu_post = sigmasq_post * (mu0 / sigmasq0 + partial_sums / sigmasq)
-    sigmasq_pred = sigmasq_post + sigmasq
-    return tfd.Normal(mu_post, jnp.sqrt(sigmasq_pred)).log_prob(xs[:, None])
-
-
-def hmm_filter(hazard_rates, pred_log_likes):
+###
+# Generic functions for changepoint inference (over run lengths)
+###
+def cp_filter(hazard_rates, pred_log_likes):
     """
     hazard_rates: (K+1,)
     pred_log_probs: (T, K+1)
@@ -108,7 +81,7 @@ def hmm_filter(hazard_rates, pred_log_likes):
     return log_normalizer, filtered_probs, predicted_probs
 
 
-def hmm_backward_filter(hazard_rates, pred_log_likes):
+def cp_backward_filter(hazard_rates, pred_log_likes):
     """ """
     K = pred_log_likes.shape[1] - 1
 
@@ -128,10 +101,10 @@ def hmm_backward_filter(hazard_rates, pred_log_likes):
     return log_normalizer, backward_pred_probs
 
 
-def hmm_smoother(hazard_rates, pred_log_likes):
+def cp_smoother(hazard_rates, pred_log_likes):
     """ """
-    log_normalizer, filtered_probs, predicted_probs = hmm_filter(hazard_rates, pred_log_likes)
-    _, backward_pred_probs = hmm_backward_filter(hazard_rates, pred_log_likes)
+    log_normalizer, filtered_probs, predicted_probs = cp_filter(hazard_rates, pred_log_likes)
+    _, backward_pred_probs = cp_backward_filter(hazard_rates, pred_log_likes)
 
     # Compute smoothed probabilities
     smoothed_probs = filtered_probs * backward_pred_probs
@@ -152,22 +125,23 @@ def hmm_smoother(hazard_rates, pred_log_likes):
     return log_normalizer, smoothed_probs, transition_probs
 
 
-def hmm_posterior_sample(key, hazard_rates, pred_log_likes):
+def cp_posterior_sample(key, hazard_rates, pred_log_likes):
     r"""Sample a latent sequence from the posterior.
 
     Args:
         key: random number generator
-        hazard_rates: $p(z_1 \mid u_1, \theta)$
-        pred_log_likes: $p(z_{t+1} \mid z_t, u_t, \theta)$
+        hazard_rates: $p(z_{t+1} = 0 \mid z_t)$
+        pred_log_likes: $p(x_t \mid x_{1:t-1}, z_t)$
 
     Returns:
         :sample of the latent states, $z_{1:T}$
 
     """
-    num_timesteps, num_states = pred_log_likes.shape
+    num_timesteps = pred_log_likes.shape[0]
+    num_states = pred_log_likes.shape[1] - 1
 
     # Run the HMM smoother
-    _, filtered_probs = hmm_filter(hazard_rates, pred_log_likes)
+    _, filtered_probs = cp_filter(hazard_rates, pred_log_likes)
 
     def _step(carry, args):
         run_length = carry
@@ -181,24 +155,22 @@ def hmm_posterior_sample(key, hazard_rates, pred_log_likes):
         # note: if z_{t+1} > 0, then z_t must equal (z_{t+1} - 1)
         #       only uncertainty is when z_{t+1} = 0.
         run_length = jnp.where(
-            run_length > 0, run_length - 1, jr.choice(_key, a=num_states, p=smoothed_probs)
+            run_length > 0, run_length - 1, jr.choice(_key, a=num_states + 1, p=smoothed_probs)
         )
 
         return run_length, run_length
 
     # Run the HMM smoother
     rngs = jr.split(key, num_timesteps)
-    last_length = jr.choice(rngs[-1], a=num_states, p=filtered_probs[-1])
+    last_length = jr.choice(rngs[-1], a=num_states + 1, p=filtered_probs[-1])
     args = (rngs[:-1], filtered_probs[:-1])
     _, run_lengths = scan(_step, last_length, args, reverse=True)
 
     # Stack and return the run lengths
-    run_lengths = jnp.concatenate([run_lengths, jnp.array([last_length])])
-    return run_lengths
+    return jnp.append(run_lengths, last_length)
+    
 
-
-def hmm_posterior_mode(
-    initial_distribution,
+def cp_posterior_mode(
     hazard_rates,
     pred_log_likes,
 ):
@@ -212,11 +184,11 @@ def hmm_posterior_mode(
     Returns:
         most likely state sequence
     """
-    num_timesteps, num_states = pred_log_likes.shape
+    num_states = pred_log_likes.shape[1] - 1
 
-    # Note:
-    #     initial_dist = jnp.zeros(num_states, dtype=float)
-    #     initial_dist = initial_dist.at[0].set(1.0)
+    # Note: we could allow more general initial distributions for left-censoring
+    initial_dist = jnp.zeros(num_states + 1, dtype=float)
+    initial_dist = initial_dist.at[0].set(1.0)
 
     # Run the backward pass
     def _backward_pass(best_next_score, next_log_likes):
@@ -226,12 +198,12 @@ def hmm_posterior_mode(
         )
 
         best_idx = jnp.argmax(scores, axis=0)
-        best_next_state = jnp.where(best_idx == 0, 0, jnp.arange(1, num_states))
+        best_next_state = jnp.where(best_idx == 0, 0, jnp.arange(1, num_states + 1))
         best_next_score = jnp.max(scores, axis=0)
         return jnp.append(best_next_score, X[0]), jnp.append(best_next_state, 0)
 
     best_second_score, best_next_states = scan(
-        _backward_pass, jnp.zeros(num_states), pred_log_likes[1:], reverse=True
+        _backward_pass, jnp.zeros(num_states + 1), pred_log_likes[1:], reverse=True
     )
 
     # Run the forward pass
@@ -240,42 +212,145 @@ def hmm_posterior_mode(
         return next_state, next_state
 
     first_state = jnp.argmax(
-        jnp.log(initial_distribution) + pred_log_likes[0] + best_second_score
+        jnp.log(initial_dist) + pred_log_likes[0] + best_second_score
     )
     _, states = scan(_forward_pass, first_state, best_next_states)
 
-    return jnp.concatenate([jnp.array([first_state]), states])
+    return jnp.insert(first_state, 0, states)
 
 
-def compute_conditional_means(xs, K):
-    """
-    Compute conditional means of mu_t given runs of varying length ending at time t
+###
+# The functions below are for the special case of a changepoint model with
+# scalar Gaussian emissions. 
+###
+def _compute_gaussian_stats(emissions, num_states):
+    r"""
+    Compute conditional stats of mu_t given runs of varying length ending at time t
 
     Returns:
-        mus: (T, K+1) array x[t-k,t+1].mean() for all t and k
+        partial_sums: (T, K+1) array x[t-k:t+1].sum() for all t and k
+        partial_counts: (T, K+1) array number of data points contributing to the sum
     """
-
     def _step(carry, x):
         """
         means: (K + 1,) array of means
         """
         sums, counts = carry
+        
         new_sums = jnp.roll(sums, 1)
         new_sums = new_sums.at[0].set(0.0)
         new_sums += x
+
         new_counts = jnp.roll(counts, 1)
         new_counts = new_counts.at[0].set(0)
         new_counts += 1
 
-        return (new_sums, new_counts), new_sums / new_counts
+        return (new_sums, new_counts), (new_sums, new_counts)
 
-    _, partial_means = scan(_step, (jnp.zeros(K + 1), jnp.zeros(K + 1)), xs)
-    return partial_means
+    initial_carry = (jnp.zeros(num_states + 1), jnp.zeros(num_states + 1))
+    _, (partial_sums, partial_counts) = scan(_step, initial_carry, emissions)
+    return partial_sums, partial_counts
+
+# Test that each row = (0, 1, ..., K) except in the top right corner of the matrix
 
 
-def sample_cp_prior(key, num_timesteps, hazard_rates, mu0, sigmasq0):
-    """ """
+def _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq):
+    r"""
+    Compute the one-step ahead predictive log likelihoods
 
+        \log p(x[t+1] | x[t-K:t])
+
+    integrating over the latent mean \mu[t] for that run.
+
+    Note: partial_sums and parital_counts come from `compute_conditional_stats` above.
+    """
+    num_states = partial_sums.shape[1] - 1
+    
+    # Compute sufficient stats of the *predictive* distribution
+    pred_sums = jnp.vstack([jnp.zeros(num_states + 1), partial_sums[:-1]])
+    pred_counts = jnp.vstack([jnp.zeros(num_states + 1), partial_counts[:-1]])
+
+    # Compute the posterior predictive distribution and return the log prob
+    sigmasq_post = 1 / (1 / sigmasq0 + pred_counts / sigmasq)
+    mu_post = sigmasq_post * (mu0 / sigmasq0 + pred_sums / sigmasq)
+    sigmasq_pred = sigmasq_post + sigmasq
+    return tfd.Normal(mu_post, jnp.sqrt(sigmasq_pred)).log_prob(emissions[:, None])
+
+
+def gaussian_cp_posterior_sample(key, 
+                                 emissions : Float[Array, "num_timesteps"], 
+                                 hazard_rates  : Float[Array, "max_duration"], 
+                                 mu0 : Float, 
+                                 sigmasq0 : Float, 
+                                 sigmasq : Float):
+    r"""
+    Return a sample of the run lengths and the latent means given emissions.
+
+    #TODO: document this 
+    """
+    num_timesteps = emissions.shape[0]
+    num_states = hazard_rates.shape[0] - 1
+
+    # First sample the run lengths
+    k1, k2 = jr.split(key)
+    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
+    lls = _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
+    zs = cp_posterior_sample(k1, hazard_rates, lls)
+
+    # Then sample the means
+    def _backward_sample(mu_next, args):
+        key, x_sum, n, z, z_next = args
+        sigmasq_post = 1 / (1 / sigmasq0 + n[z] / sigmasq)
+        mu_post = sigmasq_post * (mu0 / sigmasq0 + x_sum[z] / sigmasq)
+
+        mu = jnp.where(z_next == 0, 
+                       tfd.Normal(mu_post, jnp.sqrt(sigmasq_post)).sample(seed=key),
+                       mu_next)
+        return mu, mu
+        
+    args = (jr.split(k2, num_timesteps),
+            partial_sums, 
+            partial_counts,
+            zs, 
+            jnp.append(zs[1:], 0)) 
+    _, mus = scan(_backward_sample, jnp.nan, args, reverse=True)
+    return zs, mus
+
+
+def gaussian_cp_posterior_mode(emissions : Float[Array, "num_timesteps"], 
+                               hazard_rates  : Float[Array, "max_duration"], 
+                               mu0 : Float, 
+                               sigmasq0 : Float, 
+                               sigmasq : Float):
+    num_states = hazard_rates.shape[0] - 1
+
+    # First compute the most likely run lengths)
+    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
+    lls = _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
+    zs = cp_posterior_mode(hazard_rates, lls)
+
+    # Now compute the most likely mus
+    def _backward_sample(mu_next, args):
+        x_sum, n, z, z_next = args
+        sigmasq_post = 1 / (1 / sigmasq0 + n[z] / sigmasq)
+        mu_post = sigmasq_post * (mu0 / sigmasq0 + x_sum[z] / sigmasq)
+
+        mu = jnp.where(z_next == 0, 
+                       mu_post,
+                       mu_next)
+        return mu, mu
+        
+    args = (partial_sums, 
+            partial_counts,
+            zs, 
+            jnp.append(zs[1:], 0)) 
+    _, mus = scan(_backward_sample, jnp.nan, args, reverse=True)
+    return zs, mus
+
+
+def sample_gaussian_cp_model(key, num_timesteps, hazard_rates, mu0, sigmasq0):
+    """ 
+    """
     def _step(carry, key):
         z, mu = carry
         k1, k2 = jr.split(key)

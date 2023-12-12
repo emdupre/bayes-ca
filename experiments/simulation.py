@@ -6,11 +6,11 @@ import matplotlib.pyplot as plt
 from tensorflow_probability.substrates import jax as tfp
 
 from bayes_ca.inference import (
-    sample_cp_prior,
-    compute_pred_log_likes,
+    sample_gaussian_cp_model,
+    _compute_gaussian_lls,
     compute_conditional_means,
-    hmm_filter,
-    hmm_smoother,
+    cp_filter,
+    cp_smoother,
 )
 
 tfd = tfp.distributions
@@ -50,7 +50,7 @@ def main(
 
     # Sample the prior
     this_key, key = jr.split(key)
-    zs, mus = sample_cp_prior(this_key, num_timesteps, hazard_rates, mu0, sigmasq0)
+    zs, mus = sample_gaussian_cp_model(this_key, num_timesteps, hazard_rates, mu0, sigmasq0)
 
     # Sample and visualize noisy observations
     this_key, key = jr.split(key)
@@ -65,20 +65,20 @@ def main(
     axs[1].set_xlim(0, num_timesteps)
 
     # Experiment 1: Compute log-likelihood of simulated data
-    lls = compute_pred_log_likes(xs, K, mu0, sigmasq0, sigmasq)
+    lls = _compute_gaussian_lls(xs, K, mu0, sigmasq0, sigmasq)
     fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     axs[0].plot(mus)
     im = axs[1].imshow(lls.T, aspect="auto")
     plt.colorbar(im)
 
-    log_normalizer, filtered_probs, predicted_probs = hmm_filter(hazard_rates, lls)
+    log_normalizer, filtered_probs, predicted_probs = cp_filter(hazard_rates, lls)
     fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     axs[0].plot(mus)
     im = axs[1].imshow(filtered_probs.T, aspect="auto", origin="lower", cmap="Greys")
     axs[1].set_xlim(800, 1000)
 
     # Experiment 2: Backward filtering
-    log_normalizer, smoothed_probs, transition_probs = hmm_smoother(hazard_rates, lls)
+    log_normalizer, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
     fig, axs = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
     axs[0].plot(mus)
     axs[0].plot(xs, "r.", alpha=0.5)
