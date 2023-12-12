@@ -348,27 +348,28 @@ def gaussian_cp_posterior_mode(emissions : Float[Array, "num_timesteps"],
     return zs, mus
 
 
-def gaussian_cp_posterior_mean(emissions : Float[Array, "num_timesteps"], 
-                               hazard_rates  : Float[Array, "max_duration"], 
-                               mu0 : Float, 
-                               sigmasq0 : Float, 
-                               sigmasq : Float):
+def gaussian_cp_smoother(emissions : Float[Array, "num_timesteps"], 
+                         hazard_rates  : Float[Array, "max_duration"], 
+                         mu0 : Float, 
+                         sigmasq0 : Float, 
+                         sigmasq : Float):
     num_states = hazard_rates.shape[0] - 1
 
     # First compute the most likely run lengths)
     partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
     lls = _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
-    _, E_zs, transition_probs = cp_smoother(hazard_rates, lls)
+    log_normalizer, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
 
+    # Copmute posterior distribution of latent mean for each time and run length
     sigmasq_post = 1 / (1 / sigmasq0 + partial_counts / sigmasq)
     mu_post = sigmasq_post * (mu0 / sigmasq0 + partial_sums / sigmasq)
 
+    # Sum over possible run lengths to compute smoothed means
     inpt = (transition_probs * mu_post).T        # KT
     inpt = inpt[None, None, :, :]                # NCKT
     kernel = jnp.tril(jnp.ones((num_states + 1, num_states + 1)))[None, None, :, :]   # OIKK
-
-    E_mus = conv(inpt, kernel, (1, 1), [(0, 0), (0, num_states)])[0, 0, 0] # T
-    return E_zs, E_mus
+    smoothed_means = conv(inpt, kernel, (1, 1), [(0, 0), (0, num_states)])[0, 0, 0] # T
+    return log_normalizer, smoothed_probs, transition_probs, smoothed_means
 
 
 def sample_gaussian_cp_model(key, num_timesteps, hazard_rates, mu0, sigmasq0):
