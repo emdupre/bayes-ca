@@ -141,8 +141,8 @@ def cp_posterior_sample(key, hazard_rates, pred_log_likes):
     num_timesteps = pred_log_likes.shape[0]
     num_states = pred_log_likes.shape[1] - 1
 
-    # Run the HMM smoother
-    _, filtered_probs = cp_filter(hazard_rates, pred_log_likes)
+    # Run the CP filter
+    _, filtered_probs, _ = cp_filter(hazard_rates, pred_log_likes)
 
     def _step(carry, args):
         run_length = carry

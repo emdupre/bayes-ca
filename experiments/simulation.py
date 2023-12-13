@@ -25,7 +25,7 @@ tfd = tfp.distributions
 @click.option("--prior_mean", "mu0", default=0.0, help="Prior mean, mu0")
 @click.option("--prior_variance", "sigmasq0", default=3**2, help="Prior variance, sigmasq0")
 @click.option(
-    "--observation_variance", "sigmasq", default=3**2, help="Observation variance, sigmasq"
+    "--observation_variance", "sigmasq", default=0.5**2, help="Observation variance, sigmasq"
 )
 @click.option("--seed", default=0, help="Random seed.")
 def main(
@@ -67,8 +67,7 @@ def main(
     axs[1].set_xlim(0, num_timesteps)
 
     # Experiment 1: Compute log-likelihood of simulated data
-    partial_sums, partial_counts = _compute_gaussian_stats(xs, K)
-    lls = _compute_gaussian_lls(xs, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
+    lls = _compute_gaussian_lls(xs, K, mu0, sigmasq0, sigmasq)
     fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     axs[0].plot(mus)
     im = axs[1].imshow(lls.T, aspect="auto")
