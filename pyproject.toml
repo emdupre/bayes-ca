@@ -32,7 +32,7 @@ dependencies = [
 dev = [
     'pre-commit',
     'black',
-    'pytest'
+    'pytest',
 ]
 
 [tool.black]

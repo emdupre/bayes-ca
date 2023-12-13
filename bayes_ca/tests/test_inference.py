@@ -2,12 +2,15 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax.lax import conv
 
+import dynamax.hidden_markov_model.inference as hmm
+
 from bayes_ca.inference import (
     _compute_gaussian_stats,
     _compute_gaussian_lls,
     cp_filter,
     cp_backward_filter,
     cp_smoother,
+    cp_posterior_mode,
     gaussian_cp_smoother,
     sample_gaussian_cp_model,
 )
@@ -33,16 +36,41 @@ zs, mus = sample_gaussian_cp_model(this_key, num_timesteps, hazard_rates, mu0, s
 # Sample noisy observations
 this_key, key = jr.split(key)
 xs = mus + jnp.sqrt(sigmasq) * jr.normal(this_key, mus.shape)
+
 partial_sums, partial_counts = _compute_gaussian_stats(xs, K)
-lls = _compute_gaussian_lls(xs, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
+lls = _compute_gaussian_lls(xs, K, mu0, sigmasq0, sigmasq)
 _, _, transition_probs = cp_smoother(hazard_rates, lls)
 
 
-def test_log_normalizers():
-    """ """
-    forward_normalizer, _, _ = cp_filter(hazard_rates, lls)
-    backward_normalizer, _ = cp_backward_filter(hazard_rates, lls)
-    assert jnp.isclose(forward_normalizer, backward_normalizer, atol=1.0)
+# def test_log_normalizers():
+#     """ """
+#     forward_normalizer, _, _ = cp_filter(hazard_rates, lls)
+#     backward_normalizer, _ = cp_backward_filter(hazard_rates, lls)
+#     assert jnp.isclose(forward_normalizer, backward_normalizer, atol=1.0)
+
+assert hazard_rates[-1] == 1.0
+A = jnp.diag(1 - hazard_rates[:-1], k=1)
+A = A.at[:,0].set(hazard_rates)
+pi0 = jnp.zeros(K + 1)
+pi0 = pi0.at[0].set(1.0)
+
+
+def test_cp_filter():
+    log_normalizer, _, _ = cp_filter(hazard_rates, lls)
+    log_normalizer2, _, _ = hmm.hmm_filter(pi0, A, lls)
+    assert jnp.isclose(log_normalizer, log_normalizer2, atol=1e-3)
+
+
+def test_cp_smoother():
+    log_normalizer, smoothed_probs, _ = cp_smoother(hazard_rates, lls)
+    post = hmm.hmm_smoother(pi0, A, lls)
+    assert jnp.allclose(smoothed_probs, post.smoothed_probs, atol=1e-3)
+
+
+def test_cp_posterior_mode():
+    zs = cp_posterior_mode(hazard_rates, lls)
+    zs2 = hmm.hmm_posterior_mode(pi0, A, lls)
+    assert jnp.allclose(zs, zs2)
 
 
 def test_kernel_conv():

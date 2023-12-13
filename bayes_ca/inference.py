@@ -44,7 +44,8 @@ def _condition_on(probs, ll):
 
 def _predict(probs, hazard_rates):
     return jnp.concatenate(
-        [jnp.array([probs @ hazard_rates]), (1 - hazard_rates[:-1]) * probs[:-1]]
+        [jnp.array([probs @ hazard_rates]), 
+         (1 - hazard_rates[:-1]) * probs[:-1]]
     )
 
 
@@ -97,14 +98,14 @@ def cp_backward_filter(hazard_rates, pred_log_likes):
         return (log_normalizer, next_backward_pred_probs), backward_pred_probs
 
     carry = (0.0, jnp.ones(K + 1))
-    (log_normalizer, _), backward_pred_probs = scan(_step, carry, pred_log_likes, reverse=True)
-    return log_normalizer, backward_pred_probs
+    _, backward_pred_probs = scan(_step, carry, pred_log_likes, reverse=True)
+    return backward_pred_probs
 
 
 def cp_smoother(hazard_rates, pred_log_likes):
     """ """
     log_normalizer, filtered_probs, predicted_probs = cp_filter(hazard_rates, pred_log_likes)
-    _, backward_pred_probs = cp_backward_filter(hazard_rates, pred_log_likes)
+    backward_pred_probs = cp_backward_filter(hazard_rates, pred_log_likes)
 
     # Compute smoothed probabilities
     smoothed_probs = filtered_probs * backward_pred_probs
@@ -216,7 +217,7 @@ def cp_posterior_mode(
     )
     _, states = scan(_forward_pass, first_state, best_next_states)
 
-    return jnp.insert(first_state, 0, states)
+    return jnp.insert(states, 0, first_state)
 
 
 ###
@@ -254,21 +255,36 @@ def _compute_gaussian_stats(emissions, num_states):
 # Test that each row = (0, 1, ..., K) except in the top right corner of the matrix
 
 
-def _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq):
+def _compute_gaussian_lls(emissions, num_states, mu0, sigmasq0, sigmasq):
     r"""
     Compute the one-step ahead predictive log likelihoods
 
         \log p(x[t+1] | x[t-K:t])
 
     integrating over the latent mean \mu[t] for that run.
-
-    Note: partial_sums and parital_counts come from `compute_conditional_stats` above.
     """
-    num_states = partial_sums.shape[1] - 1
-    
-    # Compute sufficient stats of the *predictive* distribution
-    pred_sums = jnp.vstack([jnp.zeros(num_states + 1), partial_sums[:-1]])
-    pred_counts = jnp.vstack([jnp.zeros(num_states + 1), partial_counts[:-1]])
+
+    # Compute the sufficient statistics of the predictive distribution
+    def _step(carry, x):
+        """
+        sums: (K,) array of sums
+            sums: (T, K+1) array of sums x_{t-k:t-1} for k=0,...,K
+            counts: (T, K+1) number of terms contributing to each sum
+        """
+        sums, counts = carry
+
+        new_sums = jnp.roll(sums, 1)
+        new_sums += x
+        new_sums = new_sums.at[0].set(0.0)
+
+        new_counts = jnp.roll(counts, 1)
+        new_counts += 1
+        new_counts = new_counts.at[0].set(0)
+        return (new_sums, new_counts), (sums, counts)
+
+    initial_carry = (jnp.zeros(num_states + 1, dtype=float), 
+                     jnp.zeros(num_states + 1, dtype=int))
+    _, (pred_sums, pred_counts) = scan(_step, initial_carry, emissions)
 
     # Compute the posterior predictive distribution and return the log prob
     sigmasq_post = 1 / (1 / sigmasq0 + pred_counts / sigmasq)
@@ -293,8 +309,7 @@ def gaussian_cp_posterior_sample(key,
 
     # First sample the run lengths
     k1, k2 = jr.split(key)
-    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
-    lls = _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
+    lls = _compute_gaussian_lls(emissions, num_states, mu0, sigmasq0, sigmasq)
     zs = cp_posterior_sample(k1, hazard_rates, lls)
 
     # Then sample the means
@@ -308,6 +323,7 @@ def gaussian_cp_posterior_sample(key,
                        mu_next)
         return mu, mu
         
+    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
     args = (jr.split(k2, num_timesteps),
             partial_sums, 
             partial_counts,
@@ -325,12 +341,11 @@ def gaussian_cp_posterior_mode(emissions : Float[Array, "num_timesteps"],
     num_states = hazard_rates.shape[0] - 1
 
     # First compute the most likely run lengths)
-    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
-    lls = _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
+    lls = _compute_gaussian_lls(emissions, num_states, mu0, sigmasq0, sigmasq)
     zs = cp_posterior_mode(hazard_rates, lls)
 
     # Now compute the most likely mus
-    def _backward_sample(mu_next, args):
+    def _backward_pass(mu_next, args):
         x_sum, n, z, z_next = args
         sigmasq_post = 1 / (1 / sigmasq0 + n[z] / sigmasq)
         mu_post = sigmasq_post * (mu0 / sigmasq0 + x_sum[z] / sigmasq)
@@ -340,11 +355,12 @@ def gaussian_cp_posterior_mode(emissions : Float[Array, "num_timesteps"],
                        mu_next)
         return mu, mu
         
+    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
     args = (partial_sums, 
             partial_counts,
             zs, 
             jnp.append(zs[1:], 0)) 
-    _, mus = scan(_backward_sample, jnp.nan, args, reverse=True)
+    _, mus = scan(_backward_pass, jnp.nan, args, reverse=True)
     return zs, mus
 
 
@@ -356,11 +372,11 @@ def gaussian_cp_smoother(emissions : Float[Array, "num_timesteps"],
     num_states = hazard_rates.shape[0] - 1
 
     # First compute the most likely run lengths)
-    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
-    lls = _compute_gaussian_lls(emissions, partial_sums, partial_counts, mu0, sigmasq0, sigmasq)
+    lls = _compute_gaussian_lls(emissions, num_states, mu0, sigmasq0, sigmasq)
     log_normalizer, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
 
     # Copmute posterior distribution of latent mean for each time and run length
+    partial_sums, partial_counts = _compute_gaussian_stats(emissions, num_states)
     sigmasq_post = 1 / (1 / sigmasq0 + partial_counts / sigmasq)
     mu_post = sigmasq_post * (mu0 / sigmasq0 + partial_sums / sigmasq)
 
