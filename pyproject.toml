@@ -9,7 +9,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
 ]
-requires-python = ">3.10"
+requires-python = ">=3.10"
 dependencies = [
     "click",
     "Cython",
@@ -25,7 +25,7 @@ dependencies = [
     "optax",
     "scikit-learn",
     "scipy",
-    "tqdm"
+    "tqdm",
 ]
 
 [project.optional-dependencies]
