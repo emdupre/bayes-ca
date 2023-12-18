@@ -10,7 +10,11 @@ from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 
 
-def _normalize(u, axis: Optional[Int] = 0, eps: Optional[Float] = 1e-15):
+def _normalize(
+    u: Float[Array, "num_timesteps max_duration"],
+    axis: Optional[Int] = 0,
+    eps: Optional[Float] = 1e-15,
+):
     """Normalizes the values within the axis in a way that they sum up to 1.
 
     Args:
@@ -27,7 +31,9 @@ def _normalize(u, axis: Optional[Int] = 0, eps: Optional[Float] = 1e-15):
     return u / c, c
 
 
-def _condition_on(probs, ll):
+def _condition_on(
+    probs: Float[Array, "max_duration"], ll: Float[Array, "num_timesteps max_duration"]
+):
     """Condition on new emissions, given in the form of log likelihoods
     for each discrete state, while avoiding numerical underflow.
 
@@ -46,7 +52,7 @@ def _condition_on(probs, ll):
 
 
 def _predict(
-    probs,
+    probs: Float[Array, "max_duration"],
     hazard_rates: Float[Array, "max_duration"],
 ):
     return jnp.concatenate(
@@ -55,7 +61,7 @@ def _predict(
 
 
 def _backward_predict(
-    probs,
+    probs: Float[Array, "max_duration"],
     hazard_rates: Float[Array, "max_duration"],
 ):
     p = hazard_rates * probs[0]
