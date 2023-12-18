@@ -37,8 +37,8 @@ zs, mus = sample_gaussian_cp_model(this_key, num_timesteps, hazard_rates, mu0, s
 this_key, key = jr.split(key)
 xs = mus + jnp.sqrt(sigmasq) * jr.normal(this_key, mus.shape)
 
-partial_sums, partial_counts = _compute_gaussian_stats(xs, K)
-lls = _compute_gaussian_lls(xs, K, mu0, sigmasq0, sigmasq)
+partial_sums, partial_counts = _compute_gaussian_stats(xs, K + 1)
+lls = _compute_gaussian_lls(xs, K + 1, mu0, sigmasq0, sigmasq)
 _, _, transition_probs = cp_smoother(hazard_rates, lls)
 
 
@@ -50,7 +50,7 @@ _, _, transition_probs = cp_smoother(hazard_rates, lls)
 
 assert hazard_rates[-1] == 1.0
 A = jnp.diag(1 - hazard_rates[:-1], k=1)
-A = A.at[:,0].set(hazard_rates)
+A = A.at[:, 0].set(hazard_rates)
 pi0 = jnp.zeros(K + 1)
 pi0 = pi0.at[0].set(1.0)
 
