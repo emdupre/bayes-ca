@@ -1,5 +1,7 @@
 from typing import Optional
+from functools import partial
 
+from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
 from jax.lax import conv, scan
@@ -165,8 +167,7 @@ def cp_posterior_sample(
         :sample of the latent states, $z_{1:T}$
 
     """
-    num_timesteps = pred_log_likes.shape[0]
-    _, max_duration = pred_log_likes.shape
+    num_timesteps, max_duration = pred_log_likes.shape
 
     # Run the CP filter
     _, filtered_probs, _ = cp_filter(hazard_rates, pred_log_likes)
@@ -249,7 +250,9 @@ def cp_posterior_mode(
 # The functions below are for the special case of a changepoint model with
 # scalar Gaussian emissions.
 ###
-def _compute_gaussian_stats(emissions: Float[Array, "num_timesteps"], max_duration: Int):
+def _compute_gaussian_stats(
+    emissions: Float[Array, "num_timesteps num_features"], max_duration: Int
+):
     r"""
     Compute conditional stats of mu_t given runs of varying length ending at time t
 
@@ -283,7 +286,7 @@ def _compute_gaussian_stats(emissions: Float[Array, "num_timesteps"], max_durati
 
 
 def _compute_gaussian_lls(
-    emissions: Float[Array, "num_timesteps"],
+    emissions: Float[Array, "num_timesteps num_features"],
     max_duration: Int,
     mu0: Float,
     sigmasq0: Float,
@@ -315,7 +318,10 @@ def _compute_gaussian_lls(
         new_counts = new_counts.at[0].set(0)
         return (new_sums, new_counts), (sums, counts)
 
-    initial_carry = (jnp.zeros(max_duration, dtype=float), jnp.zeros(max_duration, dtype=int))
+    initial_carry = (
+        jnp.zeros(max_duration, dtype=float),
+        jnp.zeros(max_duration, dtype=int),
+    )
     _, (pred_sums, pred_counts) = scan(_step, initial_carry, emissions)
 
     # Compute the posterior predictive distribution and return the log prob
@@ -327,7 +333,7 @@ def _compute_gaussian_lls(
 
 def gaussian_cp_posterior_sample(
     key: PRNGKey,
-    emissions: Float[Array, "num_timesteps"],
+    emissions: Float[Array, "num_timesteps num_features"],
     hazard_rates: Float[Array, "max_duration"],
     mu0: Float,
     sigmasq0: Float,
@@ -338,12 +344,16 @@ def gaussian_cp_posterior_sample(
 
     #TODO: document this
     """
-    num_timesteps = emissions.shape[0]
+    num_timesteps, num_features = emissions.shape
     max_duration = hazard_rates.shape[0]
 
     # First sample the run lengths
     k1, k2 = jr.split(key)
-    lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
+    # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
+    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, None, None))(
+        emissions, max_duration, mu0, sigmasq0, sigmasq
+    )
+    lls = lls.sum(axis=0)
     zs = cp_posterior_sample(k1, hazard_rates, lls)
 
     # Then sample the means
@@ -357,23 +367,30 @@ def gaussian_cp_posterior_sample(
         )
         return mu, mu
 
-    partial_sums, partial_counts = _compute_gaussian_stats(emissions, max_duration)
+    partial_sums, partial_counts = vmap(_compute_gaussian_stats, in_axes=(-1, None), out_axes=-1)(
+        emissions, max_duration
+    )
     args = (jr.split(k2, num_timesteps), partial_sums, partial_counts, zs, jnp.append(zs[1:], 0))
-    _, mus = scan(_backward_sample, jnp.nan, args, reverse=True)
+    _, mus = scan(_backward_sample, jnp.repeat(jnp.nan, num_features), args, reverse=True)
     return zs, mus
 
 
 def gaussian_cp_posterior_mode(
-    emissions: Float[Array, "num_timesteps"],
+    emissions: Float[Array, "num_timesteps num_features"],
     hazard_rates: Float[Array, "max_duration"],
     mu0: Float,
     sigmasq0: Float,
     sigmasq: Float,
 ):
     max_duration = hazard_rates.shape[0]
+    _, num_features = emissions.shape
 
     # First compute the most likely run lengths)
-    lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
+    # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
+    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, None, None))(
+        emissions, max_duration, mu0, sigmasq0, sigmasq
+    )
+    lls = lls.sum(axis=0)
     zs = cp_posterior_mode(hazard_rates, lls)
 
     # Now compute the most likely mus
@@ -385,14 +402,16 @@ def gaussian_cp_posterior_mode(
         mu = jnp.where(z_next == 0, mu_post, mu_next)
         return mu, mu
 
-    partial_sums, partial_counts = _compute_gaussian_stats(emissions, max_duration)
+    partial_sums, partial_counts = vmap(_compute_gaussian_stats, in_axes=(-1, None), out_axes=-1)(
+        emissions, max_duration
+    )
     args = (partial_sums, partial_counts, zs, jnp.append(zs[1:], 0))
-    _, mus = scan(_backward_pass, jnp.nan, args, reverse=True)
+    _, mus = scan(_backward_pass, jnp.repeat(jnp.nan, num_features), args, reverse=True)
     return zs, mus
 
 
 def gaussian_cp_smoother(
-    emissions: Float[Array, "num_timesteps"],
+    emissions: Float[Array, "num_timesteps num_features"],
     hazard_rates: Float[Array, "max_duration"],
     mu0: Float,
     sigmasq0: Float,
@@ -402,11 +421,17 @@ def gaussian_cp_smoother(
     num_states = max_duration - 1
 
     # First compute the most likely run lengths)
-    lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
+    # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
+    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, None, None))(
+        emissions, max_duration, mu0, sigmasq0, sigmasq
+    )
+    lls = lls.sum(axis=0)
     log_normalizer, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
 
-    # Copmute posterior distribution of latent mean for each time and run length
-    partial_sums, partial_counts = _compute_gaussian_stats(emissions, max_duration)
+    # Compute posterior distribution of latent mean for each time and run length
+    partial_sums, partial_counts = vmap(_compute_gaussian_stats, in_axes=(-1, None), out_axes=-1)(
+        emissions, max_duration
+    )
     sigmasq_post = 1 / (1 / sigmasq0 + partial_counts / sigmasq)
     mu_post = sigmasq_post * (mu0 / sigmasq0 + partial_sums / sigmasq)
 
