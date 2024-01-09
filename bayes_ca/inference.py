@@ -435,11 +435,15 @@ def gaussian_cp_smoother(
     sigmasq_post = 1 / (1 / sigmasq0 + partial_counts / sigmasq)
     mu_post = sigmasq_post * (mu0 / sigmasq0 + partial_sums / sigmasq)
 
-    # Sum over possible run lengths to compute smoothed means
-    inpt = (transition_probs * mu_post).T  # KT
-    inpt = inpt[None, None, :, :]  # NCKT
-    kernel = jnp.tril(jnp.ones((max_duration, max_duration)))[None, None, :, :]  # OIKK
-    smoothed_means = conv(inpt, kernel, (1, 1), [(0, 0), (0, num_states)])[0, 0, 0]  # T
+    def _smooth_single(m):
+        # Sum over possible run lengths to compute smoothed means
+        inpt = (transition_probs * m).T  # KT
+        inpt = inpt[None, None, :, :]  # NCKT
+        kernel = jnp.tril(jnp.ones((max_duration, max_duration)))[None, None, :, :]  # OIKK
+        smoothed_means = conv(inpt, kernel, (1, 1), [(0, 0), (0, num_states)])[0, 0, 0]  # T
+        return smoothed_means
+
+    smoothed_means = vmap(_smooth_single, in_axes=-1, out_axes=-1)(mu_post)  # we want T x N
     return log_normalizer, smoothed_probs, transition_probs, smoothed_means
 
 
