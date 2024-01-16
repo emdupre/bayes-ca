@@ -1,4 +1,5 @@
 from .inference import (
+    _safe_handling_params,
     _compute_gaussian_lls,
     _compute_gaussian_stats,
     cp_filter,

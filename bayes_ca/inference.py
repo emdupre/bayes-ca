@@ -1,6 +1,8 @@
-from typing import Optional
+import warnings
 from functools import partial
+from typing import Optional, Tuple, Union
 
+import jax
 from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
@@ -10,6 +12,29 @@ from jaxtyping import Array, Float, Int
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
+
+
+def _safe_handling_params(param: Union[Float, Float[Array, "num_features"]], num_features: Int):
+    """
+    Coerces supplied parameter to have shape (num_features, ).
+
+    Parameters
+    ----------
+    param: float or array
+    num_features: int
+    """
+    if isinstance(param, float):
+        return jnp.repeat(param, num_features)
+    elif isinstance(param, Array):
+        coerced = jnp.squeeze(param)  # drop any trailing dimensions
+        if (num_features > 1) and (coerced.shape[0] != num_features):
+            raise ValueError(f"Array of shape {coerced.shape} does not match num_features.")
+        else:
+            return coerced
+    else:
+        raise TypeError(
+            f"Param of type {param.dtype} not understood. Supported types are float or Array."
+        )
 
 
 def _normalize(
@@ -77,7 +102,7 @@ def _backward_predict(
 def cp_filter(
     hazard_rates: Float[Array, "max_duration"],
     pred_log_likes: Float[Array, "num_timesteps max_duration"],
-):
+) -> Tuple[Array, Array, Array]:
     """
     hazard_rates: (K+1,)
     pred_log_probs: (T, K+1)
@@ -104,7 +129,7 @@ def cp_filter(
 def cp_backward_filter(
     hazard_rates: Float[Array, "max_duration"],
     pred_log_likes: Float[Array, "num_timesteps max_duration"],
-):
+) -> Float[Array, "num_timesteps"]:
     """ """
     K = pred_log_likes.shape[1] - 1
 
@@ -127,7 +152,7 @@ def cp_backward_filter(
 def cp_smoother(
     hazard_rates: Float[Array, "max_duration"],
     pred_log_likes: Float[Array, "num_timesteps max_duration"],
-):
+) -> Tuple[Array, Array, Array]:
     """ """
     log_normalizer, filtered_probs, predicted_probs = cp_filter(hazard_rates, pred_log_likes)
     backward_pred_probs = cp_backward_filter(hazard_rates, pred_log_likes)
@@ -155,7 +180,7 @@ def cp_posterior_sample(
     key: PRNGKey,
     hazard_rates: Float[Array, "max_duration"],
     pred_log_likes: Float[Array, "num_timesteps max_duration"],
-):
+) -> Int[Array, "num_timesteps"]:
     r"""Sample a latent sequence from the posterior.
 
     Args:
@@ -195,14 +220,14 @@ def cp_posterior_sample(
     args = (rngs[:-1], filtered_probs[:-1])
     _, run_lengths = scan(_step, last_length, args, reverse=True)
 
-    # Stack and return the run lengthsg
+    # Stack and return the run lengths
     return jnp.append(run_lengths, last_length)
 
 
 def cp_posterior_mode(
     hazard_rates: Float[Array, "max_duration"],
     pred_log_likes: Float[Array, "num_timesteps max_duration"],
-):
+) -> Int[Array, "num_timesteps"]:
     r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
 
     Args:
@@ -252,13 +277,23 @@ def cp_posterior_mode(
 ###
 def _compute_gaussian_stats(
     emissions: Float[Array, "num_timesteps num_features"], max_duration: Int
-):
+) -> Tuple[Array, Array]:
     r"""
     Compute conditional stats of mu_t given runs of varying length ending at time t
 
-    Returns:
-        partial_sums: (T, K+1) array x[t-k:t+1].sum() for all t and k
-        partial_counts: (T, K+1) array number of data points contributing to the sum
+    Parameters
+    ----------
+    emissions: ndarray
+        Observed emissions of shape (T x N)
+    max_duration: int
+
+    Returns
+    -------
+    partial_sums: ndarray
+        (T, K+1) array x[t-k:t+1].sum() for all t and k
+    partial_counts: ndarray
+        (T, K+1) array number of data points contributing to the sum
+
     """
 
     def _step(carry, x):
@@ -291,13 +326,30 @@ def _compute_gaussian_lls(
     mu0: Float,
     sigmasq0: Float,
     sigmasq: Float,
-):
+) -> Array:
     r"""
     Compute the one-step ahead predictive log likelihoods
 
         \log p(x[t+1] | x[t-K:t])
 
     integrating over the latent mean \mu[t] for that run.
+
+    Parameters
+    ----------
+    emissions: ndarray
+        Observed emissions of shape (T x N)
+    mu0: float or ndarray
+        Prior mean
+    sigmasq0: float or ndarray
+        Prior variance
+    sigmasq: float or ndarray
+        Hierarchical or observation variance
+
+    Returns
+    -------
+    lls: ndarray
+        Computed log-likelihoods of the emissions under the posterior
+        predictive distribution
     """
 
     # Compute the sufficient statistics of the predictive distribution
@@ -338,19 +390,43 @@ def gaussian_cp_posterior_sample(
     mu0: Float,
     sigmasq0: Float,
     sigmasq: Float,
-):
+) -> Tuple[Array, Array]:
     r"""
     Return a sample of the run lengths and the latent means given emissions.
 
+    Parameters
+    ----------
+    key: jr.PRNGKey
+        Random key for sampling
+    emissions: ndarray
+        Observed emissions of shape (T x N)
+    hazard_rates: ndarray
+        of shape (K,)
+    mu0: float or ndarray
+        Prior mean
+    sigmasq0: float or ndarray
+        Prior variance
+    sigmasq: float or ndarray
+        Hierarchical or observation variance
+
+    Returns
+    -------
+    zs:
+    mus:
+
     #TODO: document this
     """
-    num_timesteps, num_features = emissions.shape
     max_duration = hazard_rates.shape[0]
+
+    num_timesteps, num_features = emissions.shape
+    # mu0 = _safe_handling_params(mu0, num_features)
+    # sigmasq0 = _safe_handling_params(sigmasq0, num_features)
+    # sigmasq = _safe_handling_params(sigmasq, num_features)
 
     # First sample the run lengths
     k1, k2 = jr.split(key)
     # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
-    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, None, None))(
+    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
         emissions, max_duration, mu0, sigmasq0, sigmasq
     )
     lls = lls.sum(axis=0)
@@ -381,14 +457,33 @@ def gaussian_cp_posterior_mode(
     mu0: Float,
     sigmasq0: Float,
     sigmasq: Float,
-):
+) -> Tuple[Array, Array]:
+    """
+    Parameters
+    ----------
+    emissions: ndarray
+        Observed emissions of shape (T x N)
+    hazard_rates: ndarray
+        of shape (K,)
+    mu0: float or ndarray
+        Prior mean
+    sigmasq0: float or ndarray
+        Prior variance
+    sigmasq: float or ndarray
+        Hierarchical or observation variance
+
+    Returns
+    -------
+    zs:
+    mus:
+    """
     max_duration = hazard_rates.shape[0]
     _, num_features = emissions.shape
 
     # First compute the most likely run lengths)
     # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
-    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, None, None))(
-        emissions, max_duration, mu0, sigmasq0, sigmasq
+    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
+        emissions, max_duration, mu0[:, None], sigmasq0[:, None], sigmasq[:, None]
     )
     lls = lls.sum(axis=0)
     zs = cp_posterior_mode(hazard_rates, lls)
@@ -416,13 +511,33 @@ def gaussian_cp_smoother(
     mu0: Float,
     sigmasq0: Float,
     sigmasq: Float,
-):
+) -> Tuple[Array, Array, Array, Array]:
+    """
+    Parameters
+    ----------
+    emissions: ndarray
+        Observed emissions of shape (T x N)
+    hazard_rates: ndarray
+        of shape (K,)
+    mu0: float or ndarray
+        Prior mean
+    sigmasq0: float or ndarray
+        Prior variance
+    sigmasq: float or ndarray
+        Hierarchical or observation variance
+
+    Returns
+    -------
+    log_normalizer:
+    smoothed_probs:
+    transition_probs:
+    smoothed_means:
+    """
     max_duration = hazard_rates.shape[0]
     num_states = max_duration - 1
 
     # First compute the most likely run lengths)
-    # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
-    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, None, None))(
+    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
         emissions, max_duration, mu0, sigmasq0, sigmasq
     )
     lls = lls.sum(axis=0)
@@ -450,11 +565,32 @@ def gaussian_cp_smoother(
 def sample_gaussian_cp_model(
     key: PRNGKey,
     num_timesteps: Int,
+    num_features: Int,
     hazard_rates: Float[Array, "max_duration"],
     mu0: Float,
     sigmasq0: Float,
-):
-    """ """
+) -> Tuple[Array, Array]:
+    """
+    Parameters
+    ----------
+    key: jr.PRNGKey
+        Random key for sampling
+    num_timesteps: int
+        Number of timesteps, T
+    num_features: int
+        Number of features, N
+    hazard_rates: ndarray
+        of shape (K,)
+    mu0: float or ndarray
+        Prior mean
+    sigmasq0: float or ndarray
+        Prior variance
+
+    Returns
+    -------
+    zs:
+    mus:
+    """
 
     def _step(carry, key):
         z, mu = carry

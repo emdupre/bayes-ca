@@ -6,6 +6,7 @@ from jax.lax import conv
 import dynamax.hidden_markov_model.inference as hmm
 
 from bayes_ca.inference import (
+    _safe_handling_params,
     _compute_gaussian_stats,
     _compute_gaussian_lls,
     cp_filter,
@@ -23,9 +24,12 @@ num_features = 3
 K = 100  # max run length
 lmbda = 0.1  # prob changepoint
 mu0 = 0.0  # prior mean
-mu0 = jnp.repeat(mu0, num_features)
-sigmasq0 = 3**2  # prior variance
+sigmasq0 = 3.0**2  # prior variance
 sigmasq = 0.5**2  # observation variance
+
+mu0 = _safe_handling_params(mu0, num_features)
+sigmasq0 = _safe_handling_params(sigmasq0, num_features)
+sigmasq = _safe_handling_params(sigmasq, num_features)
 
 # Compute hazard rates under a geometric duration distribution
 # Note: we can generalize this for other changepoint distributions
@@ -34,7 +38,9 @@ hazard_rates = hazard_rates.at[-1].set(1.0)
 
 # Sample the prior
 this_key, key = jr.split(key)
-zs, mus = sample_gaussian_cp_model(this_key, num_timesteps, hazard_rates, mu0, sigmasq0)
+zs, mus = sample_gaussian_cp_model(
+    this_key, num_timesteps, num_features, hazard_rates, mu0, sigmasq0
+)
 
 # Sample noisy observations
 this_key, key = jr.split(key)
@@ -45,8 +51,8 @@ partial_sums, partial_counts = jax.vmap(_compute_gaussian_stats, in_axes=(-1, No
     xs, K + 1
 )
 # lls = _compute_gaussian_lls(xs, K + 1, mu0, sigmasq0, sigmasq)
-lls = jax.vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, None, None))(
-    xs, K + 1, mu0, sigmasq0, sigmasq
+lls = jax.vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
+    xs, K + 1, mu0[:, None], sigmasq0[:, None], sigmasq[:, None]
 )
 lls = lls.sum(axis=0)
 _, _, transition_probs = cp_smoother(hazard_rates, lls)
