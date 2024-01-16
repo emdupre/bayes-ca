@@ -3,7 +3,9 @@ from pathlib import Path
 import jax.random as jr
 import jax.numpy as jnp
 from jax import vmap, jit
+import matplotlib.pyplot as plt
 from fastprogress import progress_bar
+from sklearn.decomposition import PCA
 
 import bayes_ca.inference as core
 from bayes_ca.data import naturalistic_data
@@ -40,7 +42,7 @@ def prox_update_global_mean(
     # and using the posterior mode to find the new global states
     effective_emissions = global_means + stepsize * g
     return core.gaussian_cp_posterior_mode(
-        effective_emissions, hazard_rates, mu_pri, sigmasq_pri, stepsize
+        effective_emissions, hazard_rates, mu_pri, sigmasq_pri, jnp.repeat(stepsize, num_features)
     )[1]
 
 
@@ -74,7 +76,18 @@ data_dir = Path("/", "Users", "emdupre", "Desktop", "brainiak_data")
 bold = naturalistic_data(data_dir)
 train = bold[..., :8].T
 test = bold[..., 8:].T
-num_subjects, num_timesteps, num_features = train.shape
+
+# look at variance explained in one train subject
+pca = PCA(n_components=0.90).fit(train[0])
+PC_values = jnp.arange(pca.n_components_) + 1
+plt.plot(PC_values, pca.explained_variance_ratio_, "o-")
+plt.title("Scree Plot")
+plt.xlabel("Principal Component")
+plt.ylabel("Variance Explained")
+plt.show()
+
+pca_train = jnp.asarray([PCA(n_components=25).fit_transform(t) for t in train])
+num_subjects, num_timesteps, num_features = pca_train.shape
 
 # initialize random key for sampling
 key = jr.PRNGKey(0)
@@ -92,16 +105,19 @@ sigmasq_pri = 3.0**2
 sigmasq_subj = 0.5 * sigmasq_pri  # Note: variance of jump size is 2 * sigmasq_pri
 sigmasq_obs = jnp.var(train)  # flattened variance of training sample
 
+mu_pri = core._safe_handling_params(mu_pri, num_features)
+sigmasq_pri = core._safe_handling_params(sigmasq_pri, num_features)
+sigmasq_subj = core._safe_handling_params(sigmasq_subj, num_features)
 
 stepsize = 0.001
 global_means = jnp.zeros((num_timesteps, num_features))
 
-for itr in progress_bar(range(10000)):
+for itr in progress_bar(range(100)):
     this_key, key = jr.split(key)
     global_means, subj_means = step(
         this_key,
         stepsize,
-        train,
+        pca_train,
         sigmasq_obs,
         global_means,
         sigmasq_subj,
