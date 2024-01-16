@@ -24,7 +24,7 @@ def _safe_handling_params(param: Union[Float, Float[Array, "num_features"]], num
     num_features: int
     """
     if isinstance(param, float):
-        return jnp.repeat(param, num_features)
+        return jnp.asarray([param]) * jnp.ones(num_features)
     elif isinstance(param, Array):
         coerced = jnp.squeeze(param)  # drop any trailing dimensions
         if (num_features > 1) and (coerced.shape[0] != num_features):
@@ -426,10 +426,13 @@ def gaussian_cp_posterior_sample(
     # First sample the run lengths
     k1, k2 = jr.split(key)
     # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
-    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
-        emissions, max_duration, mu0, sigmasq0, sigmasq
-    )
-    lls = lls.sum(axis=0)
+    try:
+        lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
+            emissions, max_duration, mu0, sigmasq0, sigmasq
+        )
+        lls = lls.sum(axis=0)
+    except ValueError:
+        lls = _compute_gaussian_lls(emissions.squeeze(), max_duration, mu0, sigmasq0, sigmasq)
     zs = cp_posterior_sample(k1, hazard_rates, lls)
 
     # Then sample the means
@@ -481,11 +484,13 @@ def gaussian_cp_posterior_mode(
     _, num_features = emissions.shape
 
     # First compute the most likely run lengths)
-    # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
-    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
-        emissions, max_duration, mu0[:, None], sigmasq0[:, None], sigmasq[:, None]
-    )
-    lls = lls.sum(axis=0)
+    try:
+        lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
+            emissions, max_duration, mu0[:, None], sigmasq0[:, None], sigmasq[:, None]
+        )
+        lls = lls.sum(axis=0)
+    except IndexError:
+        lls = _compute_gaussian_lls(emissions.squeeze(), max_duration, mu0, sigmasq0, sigmasq)
     zs = cp_posterior_mode(hazard_rates, lls)
 
     # Now compute the most likely mus
@@ -537,10 +542,13 @@ def gaussian_cp_smoother(
     num_states = max_duration - 1
 
     # First compute the most likely run lengths)
-    lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
-        emissions, max_duration, mu0, sigmasq0, sigmasq
-    )
-    lls = lls.sum(axis=0)
+    try:
+        lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
+            emissions, max_duration, mu0, sigmasq0, sigmasq
+        )
+        lls = lls.sum(axis=0)
+    except ValueError:
+        lls = _compute_gaussian_lls(emissions.squeeze(), max_duration, mu0, sigmasq0, sigmasq)
     log_normalizer, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
 
     # Compute posterior distribution of latent mean for each time and run length

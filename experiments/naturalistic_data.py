@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from jax import vmap, jit
 import matplotlib.pyplot as plt
 from fastprogress import progress_bar
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, FactorAnalysis
 
 import bayes_ca.inference as core
 from bayes_ca.data import naturalistic_data
@@ -112,7 +112,7 @@ sigmasq_subj = core._safe_handling_params(sigmasq_subj, num_features)
 stepsize = 0.001
 global_means = jnp.zeros((num_timesteps, num_features))
 
-for itr in progress_bar(range(100)):
+for itr in progress_bar(range(10000)):
     this_key, key = jr.split(key)
     global_means, subj_means = step(
         this_key,
@@ -125,3 +125,11 @@ for itr in progress_bar(range(100)):
         sigmasq_pri,
         hazard_rates,
     )
+
+
+plt.plot(global_means.squeeze(), c="black", label="global")
+for i in range(1):
+    l = plt.plot(subj_means[i], alpha=0.8)[0]
+    plt.plot(pca_train[i], ".", color=l.get_color(), alpha=0.2)
+plt.legend()
+plt.show()
