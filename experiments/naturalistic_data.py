@@ -127,9 +127,9 @@ for itr in progress_bar(range(10000)):
     )
 
 
-plt.plot(global_means.squeeze(), c="black", label="global")
+plt.plot(global_means[:, 0], c="black", label="global")
 for i in range(1):
-    l = plt.plot(subj_means[i], alpha=0.8)[0]
-    plt.plot(pca_train[i], ".", color=l.get_color(), alpha=0.2)
+    l = plt.plot(subj_means[i,:,0], alpha=0.8)[0]
+    plt.plot(pca_train[i, :, 0], ".", color=l.get_color(), alpha=0.2)
 plt.legend()
 plt.show()
