@@ -1,8 +1,5 @@
-import warnings
-from functools import partial
 from typing import Optional, Tuple, Union
 
-import jax
 from jax import vmap
 import jax.numpy as jnp
 import jax.random as jr
@@ -417,21 +414,16 @@ def gaussian_cp_posterior_sample(
     #TODO: document this
     """
     max_duration = hazard_rates.shape[0]
-
     num_timesteps, num_features = emissions.shape
-    # mu0 = _safe_handling_params(mu0, num_features)
-    # sigmasq0 = _safe_handling_params(sigmasq0, num_features)
-    # sigmasq = _safe_handling_params(sigmasq, num_features)
 
     # First sample the run lengths
     k1, k2 = jr.split(key)
-    # lls = _compute_gaussian_lls(emissions, max_duration, mu0, sigmasq0, sigmasq)
-    try:
+    if num_features > 1:
         lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
             emissions, max_duration, mu0, sigmasq0, sigmasq
         )
         lls = lls.sum(axis=0)
-    except ValueError:
+    else:
         lls = _compute_gaussian_lls(emissions.squeeze(), max_duration, mu0, sigmasq0, sigmasq)
     zs = cp_posterior_sample(k1, hazard_rates, lls)
 
@@ -484,12 +476,12 @@ def gaussian_cp_posterior_mode(
     _, num_features = emissions.shape
 
     # First compute the most likely run lengths)
-    try:
+    if num_features > 1:
         lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
             emissions, max_duration, mu0[:, None], sigmasq0[:, None], sigmasq[:, None]
         )
         lls = lls.sum(axis=0)
-    except IndexError:
+    else:
         lls = _compute_gaussian_lls(emissions.squeeze(), max_duration, mu0, sigmasq0, sigmasq)
     zs = cp_posterior_mode(hazard_rates, lls)
 
@@ -540,14 +532,15 @@ def gaussian_cp_smoother(
     """
     max_duration = hazard_rates.shape[0]
     num_states = max_duration - 1
+    _, num_features = emissions.shape
 
     # First compute the most likely run lengths)
-    try:
+    if num_features > 1:
         lls = vmap(_compute_gaussian_lls, in_axes=(-1, None, 0, 0, 0))(
             emissions, max_duration, mu0, sigmasq0, sigmasq
         )
         lls = lls.sum(axis=0)
-    except ValueError:
+    else:
         lls = _compute_gaussian_lls(emissions.squeeze(), max_duration, mu0, sigmasq0, sigmasq)
     log_normalizer, smoothed_probs, transition_probs = cp_smoother(hazard_rates, lls)
 
@@ -573,7 +566,6 @@ def gaussian_cp_smoother(
 def sample_gaussian_cp_model(
     key: PRNGKey,
     num_timesteps: Int,
-    num_features: Int,
     hazard_rates: Float[Array, "max_duration"],
     mu0: Float,
     sigmasq0: Float,
