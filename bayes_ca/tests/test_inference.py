@@ -38,9 +38,7 @@ hazard_rates = hazard_rates.at[-1].set(1.0)
 
 # Sample the prior
 this_key, key = jr.split(key)
-zs, mus = sample_gaussian_cp_model(
-    this_key, num_timesteps, num_features, hazard_rates, mu0, sigmasq0
-)
+zs, mus = sample_gaussian_cp_model(this_key, num_timesteps, hazard_rates, mu0, sigmasq0)
 
 # Sample noisy observations
 this_key, key = jr.split(key)
