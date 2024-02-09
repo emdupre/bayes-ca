@@ -121,12 +121,13 @@ key = jr.PRNGKey(111)
 sigmasq_obs = 0.15**2
 
 fig, axs = plt.subplot_mosaic(
-    [["a)"], ["b)"], ["c)"]], layout="constrained", sharex=True, figsize=(7, 10)
+    [["A", "B", "C"]], layout="constrained", sharex=True, sharey=True, figsize=(14, 4)
 )
 # fig, axs = plt.subplots(nrows=3, figsize=(5, 8), sharex=True)
 plt.setp(ax1, xlim=(0, 15.5), ylim=(-1.0, 1.0))
-# fig.supylabel("$y_t$", fontsize="x-large", rotation="horizontal")
-# fig.supxlabel("$t$", fontsize="x-large", x=0.9, y=0.075, ha="right")
+fig.supylabel("$y_t$", fontsize="x-large", rotation="horizontal")
+fig.supxlabel("$t$", fontsize="x-large", ha="right", x=1.0)
+# , x=0.9, y=0.075,
 
 
 for label, ax in axs.items():
@@ -146,6 +147,8 @@ for label, ax in axs.items():
     ax.set_ylim((-1.0, 1.0))
     ax.yaxis.set_tick_params(labelleft=False)
     ax.set_yticks([])
+    ax.set_xticks(jnp.arange(1, 16, 2))
+    ax.tick_params(axis="x", direction="in", pad=-17.0)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["bottom"].set_position("zero")
@@ -153,9 +156,9 @@ for label, ax in axs.items():
     ax.plot(0, 1, "^k", transform=ax.get_xaxis_transform(), clip_on=False)
     ax.plot(0, 0, "vk", transform=ax.get_xaxis_transform(), clip_on=False)
 
-ax1 = axs["a)"]
-ax2 = axs["b)"]
-ax3 = axs["c)"]
+ax1 = axs["A"]
+ax2 = axs["B"]
+ax3 = axs["C"]
 
 # set first sub-plot
 signal_one = jnp.concatenate(
@@ -197,14 +200,14 @@ lc_two = mc.LineCollection(
 ax2.add_collection(lc_two)
 ax2.axvline(x=5.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
 ax2.axvline(x=10.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
-ax2.set_ylabel(ylabel="$y_t$", labelpad=10.0, fontsize="x-large", rotation="horizontal")
-ax2.yaxis.set_label_coords(-0.05, 0.5)
+# ax2.set_ylabel(ylabel="$y_t$", labelpad=10.0, fontsize="x-large", rotation="horizontal")
+# ax2.yaxis.set_label_coords(-0.05, 0.5)
 
 # set third sub-plot
 this_key, key = jr.split(key)
 signal_three = jnp.concatenate(
     (
-        jnp.ones((12, 1)) * -0.40,
+        jnp.ones((12, 1)) * -0.05,
         jnp.ones((3, 1)) * 0.80,
     )
 )
@@ -212,16 +215,14 @@ obs_three = tfd.Normal(signal_three, jnp.sqrt(sigmasq_obs)).sample(seed=key)
 
 ax3.plot(jnp.arange(1, 16), obs_three, "o", alpha=1, color="dimgray")
 lc_three = mc.LineCollection(
-    [((1, -0.4), (12, -0.4)), ((13, 0.8), (15, 0.8))],
+    [((1, -0.05), (12, -0.05)), ((13, 0.8), (15, 0.8))],
     color="black",
     linestyle="dotted",
 )
 ax3.add_collection(lc_three)
 ax3.axvline(x=12.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
-ax3.set_xticks(jnp.arange(1, 16, 2))
-ax3.tick_params(axis="x", direction="in", pad=-15.0)
-ax3.set_xlabel(xlabel="$t$", labelpad=10.0, fontsize="x-large", loc="right")
-ax3.xaxis.set_label_coords(0.95, 0.0)
+# ax3.set_xlabel(xlabel="$t$", labelpad=10.0, fontsize="x-large", loc="right")
+# ax3.xaxis.set_label_coords(0.95, 0.0)
 
 plt.show()
 
@@ -253,14 +254,15 @@ ax.set_xlabel(xlabel="$t$", labelpad=10.0, fontsize="x-large", loc="right")
 
 grad = jnp.atleast_2d(jnp.linspace(0, 1, 256)).T
 img = ax.imshow(
-    jnp.flip(grad),
+    grad,
     extent=[jnp.min(x), jnp.max(x), jnp.min(y), jnp.max(y)],
     interpolation="bicubic",
     # aspect="auto",
-    cmap="gist_gray_r",
+    cmap="grey",
 )
 polygon = Polygon([*zip(x, y)], closed=True, facecolor="none", edgecolor="none")
 ax.add_patch(polygon)
 img.set_clip_path(polygon)
 
+plt.tight_layout()
 plt.show()
