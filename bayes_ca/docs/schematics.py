@@ -117,17 +117,18 @@ plt.show()
 #######################################
 
 # set hyper params
-key = jr.PRNGKey(111)
+key = jr.PRNGKey(0)
 sigmasq_obs = 0.15**2
 
 fig, axs = plt.subplot_mosaic(
-    [["A", "B", "C"]], layout="constrained", sharex=True, sharey=True, figsize=(14, 4)
+    [["A", "B", "C"], ["D", "E", "F"]], layout="constrained", sharex=True, figsize=(12, 8)
 )
 # fig, axs = plt.subplots(nrows=3, figsize=(5, 8), sharex=True)
-plt.setp(ax1, xlim=(0, 15.5), ylim=(-1.0, 1.0))
-fig.supylabel("$y_t$", fontsize="x-large", rotation="horizontal")
+# fig.supylabel("$y_t$", fontsize="x-large", rotation="horizontal")
 fig.supxlabel("$t$", fontsize="x-large", ha="right", x=1.0)
 # , x=0.9, y=0.075,
+fig.axes[0].set_ylabel("$z_t$", rotation=0, weight="bold", fontsize=12)
+fig.axes[3].set_ylabel("$y_t$", labelpad=15.0, rotation=0, weight="bold", fontsize=12)
 
 
 for label, ax in axs.items():
@@ -144,23 +145,115 @@ for label, ax in axs.items():
         fontweight="bold",
     )
     ax.set_xlim((0, 15.5))
-    ax.set_ylim((-1.0, 1.0))
-    ax.yaxis.set_tick_params(labelleft=False)
-    ax.set_yticks([])
     ax.set_xticks(jnp.arange(1, 16, 2))
-    ax.tick_params(axis="x", direction="in", pad=-1.0)
+    ax.tick_params(axis="x", direction="in", pad=-15.0)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["bottom"].set_position("zero")
+    # ax.spines["bottom"].set_position("zero")
     ax.plot(1, 0, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
     ax.plot(0, 1, "^k", transform=ax.get_xaxis_transform(), clip_on=False)
-    ax.plot(0, 0, "vk", transform=ax.get_xaxis_transform(), clip_on=False)
+    # ax.plot(0, 0, "vk", transform=ax.get_xaxis_transform(), clip_on=False)
 
 ax1 = axs["A"]
 ax2 = axs["B"]
 ax3 = axs["C"]
+ax4 = axs["D"]
+ax5 = axs["E"]
+ax6 = axs["F"]
+
+# generate line segments for time, run lengths in second subplot
+time = jnp.arange(1, 16)
+run_lengths = jnp.concatenate([jnp.arange(5), jnp.arange(7), jnp.arange(3)])
+rl_coords = [(x, y) for x, y in zip(time, run_lengths)]
 
 # set first sub-plot
+linestyle_one = [
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    (5, (10, 3)),
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    (5, (10, 3)),
+    "solid",
+    "solid",
+]
+lc_one_rl = mc.LineCollection(
+    itertools.pairwise(rl_coords), color="black", linestyle=linestyle_one, linewidth=0.75
+)
+ax1.add_collection(lc_one_rl)
+ax1.scatter(time, run_lengths, color="black", marker=".")
+ax1.set_ylim((0, 13))
+ax1.set_yticks(jnp.arange(0, 13, 2))
+# ax1.yaxis.set_label_coords(-0.05, 0.85)
+
+# generate line segments for time, run lengths in second subplot
+time = jnp.arange(1, 16)
+run_lengths = jnp.concatenate([jnp.arange(5), jnp.arange(5), jnp.arange(5)])
+rl_coords = [(x, y) for x, y in zip(time, run_lengths)]
+
+# set two sub-plot
+linestyle_two = [
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    (5, (10, 3)),
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    (5, (10, 3)),
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+]
+lc_two_rl = mc.LineCollection(
+    itertools.pairwise(rl_coords), color="black", linestyle=linestyle_two, linewidth=0.75
+)
+ax2.add_collection(lc_two_rl)
+ax2.scatter(time, run_lengths, color="black", marker=".")
+ax2.set_ylim((0, 13))
+ax2.set_yticks(jnp.arange(0, 13, 2))
+
+# generate line segments for time, run lengths in second subplot
+time = jnp.arange(1, 16)
+run_lengths = jnp.concatenate([jnp.arange(12), jnp.arange(3)])
+rl_coords = [(x, y) for x, y in zip(time, run_lengths)]
+
+# set three sub-plot
+linestyle_three = [
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    "solid",
+    (5, (10, 3)),
+    "solid",
+    "solid",
+]
+lc_three_rl = mc.LineCollection(
+    itertools.pairwise(rl_coords), color="black", linestyle=linestyle_three, linewidth=0.75
+)
+
+ax3.add_collection(lc_three_rl)
+ax3.scatter(time, run_lengths, color="black", marker=".")
+ax3.set_ylim((0, 13))
+ax3.set_yticks(jnp.arange(0, 13, 2))
+
+# set fourth sub-plot
 signal_one = jnp.concatenate(
     (
         jnp.ones((5, 1)) * -0.40,
@@ -170,17 +263,22 @@ signal_one = jnp.concatenate(
 )
 obs_one = tfd.Normal(signal_one, jnp.sqrt(sigmasq_obs)).sample(seed=key)
 
-ax1.plot(jnp.arange(1, 16), obs_one, "o", alpha=1, color="dimgray")
+ax4.plot(jnp.arange(1, 16), obs_one, "o", alpha=1, color="dimgray")
+ax4.set_ylim((-1.0, 1.0))
 lc_one = mc.LineCollection(
     [((1, -0.4), (5, -0.4)), ((6, 0.3), (12, 0.3)), ((13, 0.8), (15, 0.8))],
     color="black",
     linestyle="dotted",
 )
-ax1.add_collection(lc_one)
-ax1.axvline(x=5.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
-ax1.axvline(x=12.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax4.add_collection(lc_one)
+ax4.axvline(x=5.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax4.axvline(x=12.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax4.spines["bottom"].set_position("zero")
+ax4.plot(0, 0, "vk", transform=ax4.get_xaxis_transform(), clip_on=False)
+ax4.yaxis.set_tick_params(labelleft=False)
+ax4.set_yticks([])
 
-# set second sub-plot
+# set fifth sub-plot
 this_key, key = jr.split(key)
 signal_two = jnp.concatenate(
     (
@@ -191,19 +289,24 @@ signal_two = jnp.concatenate(
 )
 obs_two = tfd.Normal(signal_two, jnp.sqrt(sigmasq_obs)).sample(seed=this_key)
 
-ax2.plot(jnp.arange(1, 16), obs_two, "o", alpha=1, color="dimgray")
+ax5.plot(jnp.arange(1, 16), obs_two, "o", alpha=1, color="dimgray")
+ax5.set_ylim((-1.0, 1.0))
 lc_two = mc.LineCollection(
     [((1, -0.4), (5, -0.4)), ((6, 0.3), (10, 0.3)), ((11, 0.8), (15, 0.8))],
     color="black",
     linestyle="dotted",
 )
-ax2.add_collection(lc_two)
-ax2.axvline(x=5.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
-ax2.axvline(x=10.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax5.add_collection(lc_two)
+ax5.axvline(x=5.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax5.axvline(x=10.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax5.spines["bottom"].set_position("zero")
+ax5.plot(0, 0, "vk", transform=ax5.get_xaxis_transform(), clip_on=False)
+ax5.yaxis.set_tick_params(labelleft=False)
+ax5.set_yticks([])
 # ax2.set_ylabel(ylabel="$y_t$", labelpad=10.0, fontsize="x-large", rotation="horizontal")
 # ax2.yaxis.set_label_coords(-0.05, 0.5)
 
-# set third sub-plot
+# set sixth sub-plot
 this_key, key = jr.split(key)
 signal_three = jnp.concatenate(
     (
@@ -213,14 +316,19 @@ signal_three = jnp.concatenate(
 )
 obs_three = tfd.Normal(signal_three, jnp.sqrt(sigmasq_obs)).sample(seed=key)
 
-ax3.plot(jnp.arange(1, 16), obs_three, "o", alpha=1, color="dimgray")
+ax6.plot(jnp.arange(1, 16), obs_three, "o", alpha=1, color="dimgray")
+ax6.set_ylim((-1.0, 1.0))
 lc_three = mc.LineCollection(
     [((1, -0.05), (12, -0.05)), ((13, 0.8), (15, 0.8))],
     color="black",
     linestyle="dotted",
 )
-ax3.add_collection(lc_three)
-ax3.axvline(x=12.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax6.add_collection(lc_three)
+ax6.axvline(x=12.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
+ax6.spines["bottom"].set_position("zero")
+ax6.plot(0, 0, "vk", transform=ax6.get_xaxis_transform(), clip_on=False)
+ax6.yaxis.set_tick_params(labelleft=False)
+ax6.set_yticks([])
 # ax3.set_xlabel(xlabel="$t$", labelpad=10.0, fontsize="x-large", loc="right")
 # ax3.xaxis.set_label_coords(0.95, 0.0)
 
@@ -301,7 +409,13 @@ run_lengths = jnp.concatenate([jnp.arange(5), jnp.arange(7), jnp.arange(3)])
 rl_coords = [(x, y) for x, y in zip(time, run_lengths)]
 
 # figure generation ; set sizing and x-, y-lims
-fig, axs = plt.subplot_mosaic([["B"], ["C"], ["D"]], layout="constrained", sharex=True, height_ratios=[1, 1, 2], figsize=(7, 8))
+fig, axs = plt.subplot_mosaic(
+    [["B"], ["C"], ["D"]],
+    layout="constrained",
+    sharex=True,
+    height_ratios=[1, 1, 2],
+    figsize=(7, 8),
+)
 fig.supxlabel("$t$", fontsize="x-large", ha="right", x=1.0)
 
 
@@ -406,4 +520,4 @@ ax3.plot(0.75, 0, "vk", transform=ax3.get_xaxis_transform(), clip_on=False)
 # render and show
 # plt.tight_layout()
 # plt.show()
-plt.savefig('schematic-four.svg')
+plt.savefig("schematic-four.svg")
