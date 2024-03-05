@@ -1,3 +1,4 @@
+import warnings
 from typing import Optional, Tuple, Union
 
 from jax import vmap
@@ -5,7 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax.lax import conv, scan
 from dynamax.types import PRNGKey
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Bool, Float, Int
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
@@ -618,9 +619,13 @@ def backtracking_lsearch(
     hazard_rates: Float[Array, "max_duration"],
     mu0: Float,
     sigmasq0: Float,
-    beta: Optional[Float] = 0.7,
+    tol: Optional[Float] = 1e-6,
+    max_iter: Optional[Int] = 500,
+    accelerated: Optional[Bool] = False,
+    max_iter_backtracking: Optional[Int] = 1000,
+    backtracking_factor: Optional[Float] = 0.6,
 ) -> Tuple[Array, Array]:
-    """
+    r"""
     Parameters
     ----------
     global_means: ndarray
@@ -635,6 +640,16 @@ def backtracking_lsearch(
         Prior mean
     sigmasq0: float or ndarray
         Prior variance
+    tol: float, optoinal
+        iteration stops when the gradient mapping is below this tolerance.
+    max_iter: int, optional
+         Maximum number of iterations
+    accelerated: Boolean
+        Whether to use the accelerated variant of the algorithim
+    max_iter_backtracking: int, optional
+        Maximum number of iterations for backtracking line search
+    backtracking_factor: float, optional
+        Value by which to shrink stepsize on each backtracking iteration
 
     Returns
     -------
@@ -651,6 +666,80 @@ def backtracking_lsearch(
         global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
     )
     g = 1 / sigmasq_subj * jnp.sum(subj_means - expected_subj_means, axis=0)  # sum over subjects
+
+    # backtracking line search for effective emissions
+    # adapted from openopt/copt/proximal_gradient.py
+
+    step_size = 1.8 / init_lipschitz(func_and_grad, expected_subj_means)
+
+    if not accelerated:
+        # .. a while loop instead of a for loop ..
+        # .. allows for infinite or floating point max_iter ..
+        while True:
+            # .. compute gradient and step size
+            global_means_next_ = global_means - step_size * g
+            update_direction = global_means_next_ - global_means
+            step_size *= 1.1
+
+            _, _, _, expected_subj_means_next_ = gaussian_cp_smoother(
+                global_means_next_, hazard_rates, mu0, sigmasq0, sigmasq_subj
+            )
+
+            for _ in range(max_iter_backtracking):
+                rhs = (
+                    expected_subj_means
+                    + g.dot(update_direction)
+                    + update_direction.dot(update_direction) / (2.0 * step_size)
+                )
+                if expected_subj_means_next_ <= rhs:
+                    # .. step size found ..
+                    break
+                else:
+                    # .. backtracking, reduce step size ..
+                    step_size *= backtracking_factor
+                    global_means_next_ = global_means - step_size * g
+                    update_direction = global_means_next_ - global_means
+            else:
+                warnings.warn("Maxium number of line-search iterations reached")
+    else:
+        while True:
+            tk = 1
+            current_step_size = step_size
+            global_means_next_ = global_means - current_step_size * g
+            for _ in range(max_iter_backtracking):
+                update_direction = global_means_next_ - global_means
+                if func_and_grad(x_next)[0] <= func_and_grad(yk)[0] + grad_fk.dot(
+                    update_direction
+                ) + update_direction.dot(update_direction) / (2.0 * current_step_size):
+                    # .. step size found ..
+                    break
+                else:
+                    # .. backtracking, reduce step size ..
+                    current_step_size *= backtracking_factor
+                    global_means_next_ = global_means - current_step_size * g
+            else:
+                warnings.warn("Maxium number of line-search iterations reached")
+            t_next = (1 + jnp.sqrt(1 + 4 * tk * tk)) / 2
+            yk = global_means_next_ + ((tk - 1.0) / t_next) * (global_means_next_ - global_means)
+
+            global_means_prox_ = global_means_next_ - current_step_size * g
+            certificate = jnp.linalg.norm((global_means - global_means_prox_) / current_step_size)
+            tk = t_next
+            global_means = global_means_next_
+
+            if certificate < tol:
+                break
+
+            if n_iterations >= max_iter:
+                break
+            else:
+                n_iterations += 1
+
+    if n_iterations >= max_iter:
+        warnings.warn(
+            "minimize_proximal_gradient did not reach the desired tolerance level",
+            RuntimeWarning,
+        )
 
     # Compute the proximal update by taking a step in the direction of the gradient
     # and using the posterior mode to find the new global states
