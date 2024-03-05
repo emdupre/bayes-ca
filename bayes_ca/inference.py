@@ -609,3 +609,53 @@ def sample_gaussian_cp_model(
     _, (zs, mus) = scan(_step, initial_carry, jr.split(key, num_timesteps))
 
     return zs, mus
+
+
+def backtracking_lsearch(
+    global_means: Float[Array, "num_timesteps num_features"],
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+    mu0: Float,
+    sigmasq0: Float,
+    beta: Optional[Float] = 0.7,
+) -> Tuple[Array, Array]:
+    """
+    Parameters
+    ----------
+    global_means: ndarray
+        Estimated global means of shape (T x N)
+    subj_means: ndarray
+        Estaimted subject means of shape (S x T x N)
+    sigmasq_subj: float or ndarray
+        Hierarchical variance
+    hazard_rates: ndarray
+        of shape (K,)
+    mu0: float or ndarray
+        Prior mean
+    sigmasq0: float or ndarray
+        Prior variance
+
+    Returns
+    -------
+    new_global_means : ndarray
+        Updated estimate of global means, shape (T x N)
+    g : ndarray
+        Estimated gradient, shape (T x N)
+    """
+    _, num_features = global_means.shape
+
+    # Use exponential family magic to compute gradient of the
+    # smooth part of the objective (not including the CP prior)
+    _, _, _, expected_subj_means = gaussian_cp_smoother(
+        global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
+    )
+    g = 1 / sigmasq_subj * jnp.sum(subj_means - expected_subj_means, axis=0)  # sum over subjects
+
+    # Compute the proximal update by taking a step in the direction of the gradient
+    # and using the posterior mode to find the new global states
+    effective_emissions = global_means + stepsize * g
+    new_global_means = gaussian_cp_posterior_mode(
+        effective_emissions, hazard_rates, mu0, sigmasq0, jnp.repeat(stepsize, num_features)
+    )[1]
+    return new_global_means, g
