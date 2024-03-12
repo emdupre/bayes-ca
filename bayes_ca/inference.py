@@ -613,6 +613,7 @@ def sample_gaussian_cp_model(
 
 
 def backtracking_lsearch(
+    step_size: Float,
     global_means: Float[Array, "num_timesteps num_features"],
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
     sigmasq_subj: Float,
@@ -621,7 +622,6 @@ def backtracking_lsearch(
     sigmasq0: Float,
     tol: Optional[Float] = 1e-6,
     max_iter: Optional[Int] = 500,
-    accelerated: Optional[Bool] = False,
     max_iter_backtracking: Optional[Int] = 1000,
     backtracking_factor: Optional[Float] = 0.6,
 ) -> Tuple[Array, Array]:
@@ -658,7 +658,7 @@ def backtracking_lsearch(
     g : ndarray
         Estimated gradient, shape (T x N)
     """
-    _, num_features = global_means.shape
+    # _, num_features = global_means.shape
 
     # Use exponential family magic to compute gradient of the
     # smooth part of the objective (not including the CP prior)
@@ -669,71 +669,64 @@ def backtracking_lsearch(
 
     # backtracking line search for effective emissions
     # adapted from openopt/copt/proximal_gradient.py
+    n_iterations = 0
 
-    step_size = 1.8 / init_lipschitz(func_and_grad, expected_subj_means)
+    expected_subj_means_ = expected_subj_means
+    global_means_ = global_means
 
-    if not accelerated:
-        # .. a while loop instead of a for loop ..
-        # .. allows for infinite or floating point max_iter ..
-        while True:
-            # .. compute gradient and step size
-            global_means_next_ = global_means - step_size * g
-            update_direction = global_means_next_ - global_means
-            step_size *= 1.1
+    # .. a while loop instead of a for loop ..
+    # .. allows for infinite or floating point max_iter ..
+    while True:
+        # .. compute gradient and step size
+        effective_emissions_ = global_means_ - step_size * g
+        update_direction = effective_emissions_ - global_means_
+        step_size *= 1.1
 
-            _, _, _, expected_subj_means_next_ = gaussian_cp_smoother(
-                global_means_next_, hazard_rates, mu0, sigmasq0, sigmasq_subj
+        # Compute the proximal update by taking a step in the direction of the gradient
+        # and using the posterior mode to find the new global states
+        global_means_next_ = gaussian_cp_posterior_mode(
+            effective_emissions_, hazard_rates, mu0, sigmasq0, step_size
+        )[1]
+        _, _, _, expected_subj_means_next_ = gaussian_cp_smoother(
+            global_means_next_, hazard_rates, mu0, sigmasq0, sigmasq_subj
+        )
+        g_next_ = (
+            1 / sigmasq_subj * jnp.sum(expected_subj_means_ - expected_subj_means_next_, axis=0)
+        )  # sum over subjects
+
+        for _ in range(max_iter_backtracking):
+            g = g.ravel()
+            expected_subj_means_ = expected_subj_means_.ravel()
+            update_direction = update_direction.ravel()
+
+            rhs = (
+                expected_subj_means_
+                + g.dot(update_direction)
+                + update_direction.dot(update_direction) / (2.0 * step_size)
             )
-
-            for _ in range(max_iter_backtracking):
-                rhs = (
-                    expected_subj_means
-                    + g.dot(update_direction)
-                    + update_direction.dot(update_direction) / (2.0 * step_size)
-                )
-                if expected_subj_means_next_ <= rhs:
-                    # .. step size found ..
-                    break
-                else:
-                    # .. backtracking, reduce step size ..
-                    step_size *= backtracking_factor
-                    global_means_next_ = global_means - step_size * g
-                    update_direction = global_means_next_ - global_means
-            else:
-                warnings.warn("Maxium number of line-search iterations reached")
-    else:
-        while True:
-            tk = 1
-            current_step_size = step_size
-            global_means_next_ = global_means - current_step_size * g
-            for _ in range(max_iter_backtracking):
-                update_direction = global_means_next_ - global_means
-                if func_and_grad(x_next)[0] <= func_and_grad(yk)[0] + grad_fk.dot(
-                    update_direction
-                ) + update_direction.dot(update_direction) / (2.0 * current_step_size):
-                    # .. step size found ..
-                    break
-                else:
-                    # .. backtracking, reduce step size ..
-                    current_step_size *= backtracking_factor
-                    global_means_next_ = global_means - current_step_size * g
-            else:
-                warnings.warn("Maxium number of line-search iterations reached")
-            t_next = (1 + jnp.sqrt(1 + 4 * tk * tk)) / 2
-            yk = global_means_next_ + ((tk - 1.0) / t_next) * (global_means_next_ - global_means)
-
-            global_means_prox_ = global_means_next_ - current_step_size * g
-            certificate = jnp.linalg.norm((global_means - global_means_prox_) / current_step_size)
-            tk = t_next
-            global_means = global_means_next_
-
-            if certificate < tol:
-                break
-
-            if n_iterations >= max_iter:
+            if expected_subj_means_next_ <= rhs:
+                # .. step size found ..
                 break
             else:
-                n_iterations += 1
+                # .. backtracking, reduce step size ..
+                step_size *= backtracking_factor
+                effective_emissions_ = global_means_ - step_size * g
+                update_direction = global_means_next_ - global_means_
+        else:
+            warnings.warn("Maxium number of line-search iterations reached")
+
+        certificate = jnp.linalg.norm((global_means_ - global_means_next_) / step_size)
+        global_means_ = global_means_next_
+        expected_subj_means_ = expected_subj_means_next_
+        g = g_next_
+
+        if certificate < tol:
+            break
+
+        if n_iterations >= max_iter:
+            break
+        else:
+            n_iterations += 1  # increase iter count and repeat
 
     if n_iterations >= max_iter:
         warnings.warn(
@@ -741,10 +734,4 @@ def backtracking_lsearch(
             RuntimeWarning,
         )
 
-    # Compute the proximal update by taking a step in the direction of the gradient
-    # and using the posterior mode to find the new global states
-    effective_emissions = global_means + stepsize * g
-    new_global_means = gaussian_cp_posterior_mode(
-        effective_emissions, hazard_rates, mu0, sigmasq0, jnp.repeat(stepsize, num_features)
-    )[1]
-    return new_global_means, g
+    return global_means_, g
