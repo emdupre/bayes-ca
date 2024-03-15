@@ -1,12 +1,39 @@
 import warnings
 from typing import Optional, Tuple
 
+from scipy import sparse
 from jax import vmap
 import jax.numpy as jnp
 from jax.lax import while_loop
 from jaxtyping import Array, Float, Int
 
 from bayes_ca import inference as core
+
+
+def init_lipschitz(f_grad, x0):
+    """
+    Lipschitz constant initialization for step size,
+    adapted from openopt/copt/utils.py
+    """
+    L0 = 1e-3
+    f0, grad0 = f_grad(x0)
+    if sparse.issparse(grad0) and not sparse.issparse(x0):
+        x0 = sparse.csc_matrix(x0).T
+
+    elif sparse.issparse(x0) and not sparse.issparse(grad0):
+        grad0 = sparse.csc_matrix(grad0).T
+
+    x_tilde = x0 - (1.0 / L0) * grad0
+    f_tilde = f_grad(x_tilde)[0]
+
+    for _ in range(100):
+        if f_tilde <= f0:
+            break
+        L0 *= 10
+        x_tilde = x0 - (1.0 / L0) * grad0
+        f_tilde = f_grad(x_tilde)[0]
+
+    return L0
 
 
 def _calculate_f_g(
@@ -58,6 +85,9 @@ def nesterov_acceleration(
     backtracking_factor: Optional[Float] = 0.6,
 ) -> Tuple[Array, Array]:
     """
+    Nesterov acceleration for effective emissions
+    adapted from openopt/copt/proximal_gradient.py
+
     Parameters
     ----------
     global_means: ndarray
@@ -90,61 +120,86 @@ def nesterov_acceleration(
     """
     # _, num_features = global_means.shape
 
-    # Nesterov acceleration for effective emissions
-    # adapted from openopt/copt/proximal_gradient.py
-    n_iterations = 0
-    tk = 1
-    yk = global_means
+    def _step_cond(state):
+        itr, certificate, _ = state
+        return (itr < max_iter) & (certificate > tol)
 
-    # .. a while loop instead of a for loop ..
-    # .. allows for infinite or floating point max_iter ..
-    while True:
+    def _step_body(state):
+        itr, certificate, params = state
+        tk, yk, global_means, g = params
+
         f, g = vmap(_calculate_f_g, in_axes=(None, 0, None, None, None, None))(
             yk, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates
         )
+        # TODO : Can these sums be done more elegantly ?
+        f = f.sum()
+        g = g.sum()
+
         current_step_size = step_size
         x_next = _prox(yk + current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
-        for _ in range(max_iter_backtracking):
+
+        def _backtrack_cond(backtrack_state):
+            """ """
+            backtrack_itr, current_step_size, _back_params = backtrack_state
+            update_direction, f_next, _ = _back_params
+
+            lower_bound = (
+                f
+                + jnp.sum(g * update_direction)
+                + jnp.sum(update_direction * update_direction) / (2.0 * current_step_size)
+            )
+
+            backtrack_itr = backtrack_state
+            return (f_next > lower_bound) & (backtrack_itr <= max_iter_backtracking)
+
+        def _backtrack_body(backtrack_state):
+            """ """
+            backtrack_itr, current_step_size = backtrack_state
+            # .. backtracking, reduce step size ..
+            current_step_size *= backtracking_factor
+
             update_direction = x_next - yk
             f_next, g_next = vmap(_calculate_f_g, in_axes=(None, 0, None, None, None, None))(
                 x_next, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates
             )
-            if f_next <= f + jnp.sum(g * update_direction) + jnp.sum(
-                update_direction * update_direction
-            ) / (2.0 * current_step_size):
-                # .. step size found ..
-                break
-            else:
-                # .. backtracking, reduce step size ..
-                current_step_size *= backtracking_factor
-                x_next = _prox(yk + current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
-        else:
-            warnings.warn("Maxium number of line-search iterations reached")
+
+            # TODO : Can these sums be done more elegantly ?
+            f_next = f_next.sum()
+            g_next = g_next.sum()
+
+            _back_params = (update_direction, f_next, g_next)
+
+            return backtrack_itr + 1, current_step_size, _back_params
+
+        init_vals = (0, step_size)
+        _, step_size, _back_params = while_loop(_backtrack_cond, _backtrack_body, init_vals)
+        (_, _, g_next) = _back_params
+
         t_next = (1 + jnp.sqrt(1 + 4 * tk * tk)) / 2
         yk = x_next + ((tk - 1.0) / t_next) * (x_next - global_means)
 
-        x_prox = _prox(
-            x_next + current_step_size * g_next, mu0, sigmasq0, hazard_rates, step_size
-        )
-        certificate = jnp.linalg.norm((global_means - x_prox) / current_step_size)
+        x_prox = _prox(x_next + step_size * g_next, mu0, sigmasq0, hazard_rates, step_size)
+        certificate = jnp.linalg.norm((global_means - x_prox) / step_size)
 
-        tk = t_next
-        global_means = x_next
+        # itr, certificate, (tk, yk, global_means, g)
+        return itr + 1, certificate, (t_next, yk, x_next, g)
 
-        if certificate < tol:
-            break
+    init_vals = (
+        0,
+        jnp.inf,
+        (1, global_means, global_means, None),
+    )
+    # .. a while loop instead of a for loop ..
+    # .. allows for infinite or floating point max_iter ..
+    itr, _, params = while_loop(_step_cond, _step_body, init_vals)
+    (_, _, global_means, g) = params
 
-        if n_iterations >= max_iter:
-            break
-        else:
-            n_iterations += 1
-
-    if n_iterations >= max_iter:
+    if itr > max_iter:
         warnings.warn(
-            "did not reach desired tolerance level",
+            "Did not reach desired tolerance level",
             RuntimeWarning,
         )
-    pass
+    return global_means, g
 
 
 def line_search(
@@ -161,6 +216,9 @@ def line_search(
     backtracking_factor: Optional[Float] = 0.6,
 ) -> Tuple[Array, Array]:
     """
+    backtracking line search for effective emissions
+    adapted from openopt/copt/proximal_gradient.py
+
     Parameters
     ----------
     global_means: ndarray
@@ -193,8 +251,6 @@ def line_search(
     """
     # _, num_features = global_means.shape
 
-    # backtracking line search for effective emissions
-    # adapted from openopt/copt/proximal_gradient.py
     n_iterations = 0
     # .. compute gradient and step size
     f, g = vmap(_calculate_f_g, in_axes=(None, 0, None, None, None, None))(
