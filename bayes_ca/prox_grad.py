@@ -103,7 +103,7 @@ def nesterov_acceleration(
             yk, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates
         )
         current_step_size = step_size
-        x_next = _prox(yk - current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
+        x_next = _prox(yk + current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
         for _ in range(max_iter_backtracking):
             update_direction = x_next - yk
             f_next, g_next = vmap(_calculate_f_g, in_axes=(None, 0, None, None, None, None))(
@@ -117,14 +117,14 @@ def nesterov_acceleration(
             else:
                 # .. backtracking, reduce step size ..
                 current_step_size *= backtracking_factor
-                x_next = _prox(yk - current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
+                x_next = _prox(yk + current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
         else:
             warnings.warn("Maxium number of line-search iterations reached")
         t_next = (1 + jnp.sqrt(1 + 4 * tk * tk)) / 2
         yk = x_next + ((tk - 1.0) / t_next) * (x_next - global_means)
 
         x_prox = _prox(
-            x_next - current_step_size * g_next, mu0, sigmasq0, hazard_rates, step_size
+            x_next + current_step_size * g_next, mu0, sigmasq0, hazard_rates, step_size
         )
         certificate = jnp.linalg.norm((global_means - x_prox) / current_step_size)
 
@@ -207,7 +207,7 @@ def line_search(
     # .. allows for infinite or floating point max_iter ..
     while True:
         global_means_next = _prox(
-            global_means - step_size * g, mu0, sigmasq0, hazard_rates, step_size
+            global_means + step_size * g, mu0, sigmasq0, hazard_rates, step_size
         )
         update_direction = global_means_next - global_means
         step_size *= 1.1
@@ -229,7 +229,7 @@ def line_search(
                 # .. backtracking, reduce step size ..
                 step_size *= backtracking_factor
                 global_means_next = _prox(
-                    global_means - step_size * g, mu0, sigmasq0, hazard_rates, step_size
+                    global_means + step_size * g, mu0, sigmasq0, hazard_rates, step_size
                 )
                 update_direction = global_means_next - global_means
         else:
