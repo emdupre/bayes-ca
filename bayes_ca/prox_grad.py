@@ -1,6 +1,7 @@
 import warnings
 from typing import Optional, Tuple
 
+import jax
 from scipy import sparse
 from jax import vmap
 import jax.numpy as jnp
@@ -126,17 +127,17 @@ def nesterov_acceleration(
 
     def _step_body(state):
         itr, certificate, params = state
-        tk, yk, global_means, g = params
+        step_size, tk, yk, global_means, _ = params
 
         f, g = vmap(_calculate_f_g, in_axes=(None, 0, None, None, None, None))(
             yk, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates
         )
         # TODO : Can these sums be done more elegantly ?
-        f = f.sum()
-        g = g.sum()
+        f = -1 * f.sum()
+        g = -1 * g.sum(axis=0)
 
         current_step_size = step_size
-        x_next = _prox(yk + current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
+        x_next = _prox(yk - current_step_size * g, mu0, sigmasq0, hazard_rates, step_size)
 
         def _backtrack_cond(backtrack_state):
             """ """
@@ -149,12 +150,11 @@ def nesterov_acceleration(
                 + jnp.sum(update_direction * update_direction) / (2.0 * current_step_size)
             )
 
-            backtrack_itr = backtrack_state
             return (f_next > lower_bound) & (backtrack_itr <= max_iter_backtracking)
 
         def _backtrack_body(backtrack_state):
             """ """
-            backtrack_itr, current_step_size = backtrack_state
+            backtrack_itr, current_step_size, _ = backtrack_state
             # .. backtracking, reduce step size ..
             current_step_size *= backtracking_factor
 
@@ -164,35 +164,35 @@ def nesterov_acceleration(
             )
 
             # TODO : Can these sums be done more elegantly ?
-            f_next = f_next.sum()
-            g_next = g_next.sum()
+            f_next = -1 * f_next.sum()
+            g_next = -1 * g_next.sum(axis=0)
 
             _back_params = (update_direction, f_next, g_next)
 
             return backtrack_itr + 1, current_step_size, _back_params
 
-        init_vals = (0, step_size)
+        init_vals = (0, step_size, (x_next, 0, x_next))
         _, step_size, _back_params = while_loop(_backtrack_cond, _backtrack_body, init_vals)
         (_, _, g_next) = _back_params
 
         t_next = (1 + jnp.sqrt(1 + 4 * tk * tk)) / 2
         yk = x_next + ((tk - 1.0) / t_next) * (x_next - global_means)
 
-        x_prox = _prox(x_next + step_size * g_next, mu0, sigmasq0, hazard_rates, step_size)
+        x_prox = _prox(x_next - step_size * g_next, mu0, sigmasq0, hazard_rates, step_size)
         certificate = jnp.linalg.norm((global_means - x_prox) / step_size)
 
         # itr, certificate, (tk, yk, global_means, g)
-        return itr + 1, certificate, (t_next, yk, x_next, g)
+        return itr + 1, certificate, (step_size, t_next, yk, x_next, g)
 
     init_vals = (
         0,
         jnp.inf,
-        (1, global_means, global_means, None),
+        (step_size, 1, global_means, global_means, global_means),
     )
     # .. a while loop instead of a for loop ..
     # .. allows for infinite or floating point max_iter ..
     itr, _, params = while_loop(_step_cond, _step_body, init_vals)
-    (_, _, global_means, g) = params
+    (_, _, _, global_means, g) = params
 
     if itr > max_iter:
         warnings.warn(
