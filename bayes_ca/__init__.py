@@ -13,4 +13,4 @@ from .inference import (
     gaussian_cp_posterior_sample,
 )
 
-from .prox_grad import line_search, nesterov_acceleration
+from .prox_grad import pgd

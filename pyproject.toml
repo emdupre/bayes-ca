@@ -13,6 +13,7 @@ requires-python = ">=3.10"
 dependencies = [
     "click",
     "Cython",
+    "copt",
     "dynamax",
     "h5py",
     "jax",
