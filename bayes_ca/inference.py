@@ -532,7 +532,12 @@ def gaussian_cp_smoother(
     """
     max_duration = hazard_rates.shape[0]
     num_states = max_duration - 1
+
+    # try:
     _, num_features = emissions.shape
+    # except ValueError:
+    #     num_features = 1
+    #     emissions = emissions[:, None]
 
     # First compute the most likely run lengths)
     if num_features > 1:

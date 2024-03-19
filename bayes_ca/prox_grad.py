@@ -1,14 +1,131 @@
 import warnings
+from itertools import count
 from typing import Optional, Tuple
 
-import jax
-from scipy import sparse
-from jax import vmap
+import copt
+import numpy as np
 import jax.numpy as jnp
+from scipy import sparse
+from jax import grad, jit, vmap
 from jax.lax import while_loop
 from jaxtyping import Array, Float, Int
+from jax.flatten_util import ravel_pytree
 
 from bayes_ca import inference as core
+
+
+def minimize_prox_grad(
+    fun,
+    x0,
+    prox,
+    jac="2-point",
+    tol=1e-06,
+    max_iter=500,
+    args=(),
+    prox_args=(),
+    verbose=0,
+    callback=None,
+    step="backtracking",
+    accelerated=False,
+    eps=1e-08,
+    max_iter_backtracking=1000,
+    backtracking_factor=0.6,
+    trace_certificate=False,
+):
+    """
+    A simple wrapper for copt.minimize_proximal_gradient using JAX.
+
+    Args:
+        fun: The objective function to be minimized, written in JAX code
+        so that it is automatically differentiable.  It is of type,
+            ```fun: x, *args -> float```
+        where `x` is a PyTree and args is a tuple of the fixed parameters needed
+        to completely specify the function.
+
+        x0: Initial guess represented as a JAX PyTree.
+
+        args: tuple, optional. Extra arguments passed to the objective function
+        and its derivative.  Must consist of valid JAX types; e.g. the leaves
+        of the PyTree must be floats.
+
+        prox_args: tuple, optional. Extra arguments passed to the proximal function
+        and its derivative.  Must consist of valid JAX types; e.g. the leaves
+        of the PyTree must be floats.
+
+        _The remainder of the keyword arguments are inherited from
+        `copt.minimize_proximal_gradient`, and their descriptions are copied here for
+        convenience._
+
+        tol : float, optional
+            Tolerance for termination. For detailed control, use solver-specific
+            options.
+
+        callback : callable, optional
+            Called after each iteration. For 'trust-constr' it is a callable with
+            the signature:
+                ``callback(xk, OptimizeResult state) -> bool``
+            where ``xk`` is the current parameter vector represented as a PyTree,
+             and ``state`` is an `OptimizeResult` object, with the same fields
+            as the ones from the return. If callback returns True the algorithm
+            execution is terminated.
+
+            For all the other methods, the signature is:
+                ```callback(xk)```
+            where `xk` is the current parameter vector, represented as a PyTree.
+
+    Returns:
+        res : The optimization result represented as a ``OptimizeResult`` object.
+        Important attributes are:
+            ``x``: the solution array, represented as a JAX PyTree
+            ``success``: a Boolean flag indicating if the optimizer exited successfully
+            ``message``: describes the cause of the termination.
+        See `scipy.optimize.OptimizeResult` for a description of other attributes.
+
+    """
+    # Use tree flatten and unflatten to convert params x0 from PyTrees to flat arrays
+    x0_flat, unravel = ravel_pytree(x0)
+
+    # Wrap the objective function to consume flat _original_
+    # numpy arrays and produce scalar outputs.
+    def fun_wrapper(x_flat, *args):
+        x = unravel(x_flat)
+        return float(fun(x, *args))
+
+    # Wrap the proximal function to consume flat _original_
+    # numpy arrays and produce scalar outputs.
+    def prox_wrapper(x_flat, *prox_args):
+        x = unravel(x_flat)
+        g = float(prox(x, *prox_args))
+        return g.sum(axis=0)
+
+    # Wrap the callback to consume a pytree
+    def callback_wrapper(x_flat, *args):
+        if callback is not None:
+            x = unravel(x_flat)
+            return callback(x, *args)
+
+    # Minimize with scipy
+    results = copt.minimize_proximal_gradient(
+        fun_wrapper,
+        x0_flat,
+        prox_wrapper,
+        jac=jac,
+        tol=tol,
+        max_iter=max_iter,
+        args=args,
+        verbose=verbose,
+        callback=callback_wrapper,
+        step=step,
+        accelerated=accelerated,
+        eps=eps,
+        max_iter_backtracking=max_iter_backtracking,
+        backtracking_factor=backtracking_factor,
+        trace_certificate=trace_certificate,
+    )
+
+    # pack the output back into a PyTree
+    results["x"] = unravel(results["x"])
+    return results
 
 
 def init_lipschitz(f_grad, x0):
@@ -66,7 +183,7 @@ def _prox(
 ):
     """
     Compute the proximal update by taking a step in the direction of the gradient
-    and using the posterior mode to find the new global states/
+    and using the posterior mode to find the new global
     """
     x_next = core.gaussian_cp_posterior_mode(x, hazard_rates, mu0, sigmasq0, step_size)[1]
     return x_next
@@ -224,7 +341,7 @@ def line_search(
     global_means: ndarray
         Estimated global means of shape (T x N)
     subj_means: ndarray
-        Estaimted subject means of shape (S x T x N)
+        Estimated subject means of shape (S x T x N)
     mu0: float or ndarray
         Prior mean
     sigmasq0: float or ndarray
@@ -272,7 +389,7 @@ def line_search(
             f_next, g_next = vmap(_calculate_f_g, in_axes=(None, 0, None, None, None, None))(
                 global_means_next, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates
             )
-            f_next = f_next.sum(axis=0)
+            f_next = -1 * f_next.sum(axis=0)
             rhs = (
                 f
                 + jnp.sum(g * update_direction)
@@ -293,7 +410,7 @@ def line_search(
 
         certificate = jnp.linalg.norm((global_means - global_means_next) / step_size)
         global_means = global_means_next
-        g = g_next.sum(axis=0)
+        g = -1 * g_next.sum(axis=0)
 
         if certificate < tol:
             break
