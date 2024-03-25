@@ -7,6 +7,108 @@ from copt import minimize_proximal_gradient
 from bayes_ca import inference as core
 
 
+def _objective(
+    global_means: Float[Array, "num_timesteps num_features"],
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    mu0: Float,
+    sigmasq0: Float,
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Compute the function using the 2d params and all the hypers
+    Note that we return the negative for each value, since we are maximizing rather
+    than minimizing the function, as COPT is designed to do.
+    """
+    log_normalizer, _, _, _ = core.gaussian_cp_smoother(
+        global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
+    )
+
+    def _single_objective(subj_mean):
+        return -0.5 / sigmasq_subj * jnp.sum((subj_mean - global_means) ** 2) - log_normalizer
+
+    return -1 * vmap(_single_objective)(subj_means).sum()
+
+
+def _grad_objective(
+    global_means: Float[Array, "num_timesteps num_features"],
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    mu0: Float,
+    sigmasq0: Float,
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Compute the gradient of the function using the 2d params and all the hypers
+    Note that we return the negative for each value, since we are maximizing rather
+    than minimizing the function, as COPT is designed to do.
+    """
+    _, _, _, expected_subj_means = core.gaussian_cp_smoother(
+        global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
+    )
+
+    def _single_grad(subj_mean):
+        return 1 / sigmasq_subj * (subj_mean - expected_subj_means)
+
+    return -1 * vmap(_single_grad)(subj_means).sum(axis=0)
+
+
+# @jit
+def _flat_objective(
+    unravel,
+    _flat_global_means,
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    mu0: Float,
+    sigmasq0: Float,
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Flatten the objective to work with copt
+    """
+    global_means = unravel(_flat_global_means)
+    return _objective(global_means, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates)
+
+
+# @jit
+def _flat_grad_objective(
+    unravel,
+    _flat_global_means,
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    mu0: Float,
+    sigmasq0: Float,
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Flatten the gradient to work with copt
+    """
+    global_means = unravel(_flat_global_means)
+    g = _grad_objective(global_means, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates)
+    return ravel_pytree(g)[0]
+
+
+# @jit
+def _flat_prox(
+    unravel,
+    _flat_global_means,
+    step_size: Float,
+    mu0: Float,
+    sigmasq0: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Compute the proximal update by taking a step in the direction of the gradient
+    and using the posterior mode to find the new global
+    """
+    global_means = unravel(_flat_global_means)
+    _, num_features = global_means.shape
+    x_next = core.gaussian_cp_posterior_mode(
+        global_means, hazard_rates, mu0, sigmasq0, jnp.repeat(step_size, num_features)
+    )[1]
+    return ravel_pytree(x_next)[0]
+
+
 def pgd(
     x0: Float[Array, "num_timesteps num_features"],
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
@@ -59,102 +161,19 @@ def pgd(
             ``message``: describes the cause of the termination.
         See `scipy.optimize.OptimizeResult` for a description of other attributes.
     """
-
-    # Compute the function and its gradient, using the 2d params and all the hypers
-    # Note that we return the negative for each value, since we are maximizing rather
-    # than minimizing the function, as COPT is designed to do.
-    def _objective(
-        global_means: Float[Array, "num_timesteps num_features"],
-        subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-        mu0: Float,
-        sigmasq0: Float,
-        sigmasq_subj: Float,
-        hazard_rates: Float[Array, "max_duration"],
-    ):
-        """
-        Compute the log probability as a function of the global means
-        """
-        log_normalizer, _, _, _ = core.gaussian_cp_smoother(
-            global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
-        )
-
-        def _single_objective(subj_mean):
-            return -0.5 / sigmasq_subj * jnp.sum((subj_mean - global_means) ** 2) - log_normalizer
-
-        return -1 * vmap(_single_objective)(subj_means).sum()
-
-    def _grad_objective(
-        global_means: Float[Array, "num_timesteps num_features"],
-        subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-        mu0: Float,
-        sigmasq0: Float,
-        sigmasq_subj: Float,
-        hazard_rates: Float[Array, "max_duration"],
-    ):
-        _, _, _, expected_subj_means = core.gaussian_cp_smoother(
-            global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
-        )
-
-        def _single_grad(subj_mean):
-            return 1 / sigmasq_subj * (subj_mean - expected_subj_means)
-
-        return -1 * vmap(_single_grad)(subj_means).sum(axis=0)
-
-    # Flatten the objective and gradient to work with copt
-    def _flat_objective(
-        _flat_global_means,
-        subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-        mu0: Float,
-        sigmasq0: Float,
-        sigmasq_subj: Float,
-        hazard_rates: Float[Array, "max_duration"],
-    ):
-
-        global_means = unravel(_flat_global_means)
-        return _objective(global_means, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates)
-
-    def _flat_grad_objective(
-        _flat_global_means,
-        subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-        mu0: Float,
-        sigmasq0: Float,
-        sigmasq_subj: Float,
-        hazard_rates: Float[Array, "max_duration"],
-    ):
-
-        global_means = unravel(_flat_global_means)
-        g = _grad_objective(global_means, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates)
-        return ravel_pytree(g)[0]
-
-    # Write a flat prox operator
-    def _flat_prox(
-        _flat_global_means,
-        step_size: Float,
-        mu0: Float,
-        sigmasq0: Float,
-        hazard_rates: Float[Array, "max_duration"],
-    ):
-        """
-        Compute the proximal update by taking a step in the direction of the gradient
-        and using the posterior mode to find the new global
-        """
-        global_means = unravel(_flat_global_means)
-        x_next = core.gaussian_cp_posterior_mode(
-            global_means, hazard_rates, mu0, sigmasq0, step_size
-        )[1]
-        return ravel_pytree(x_next)[0]
-
-    # Finally, close over the global hyperparameters
-    f = lambda x: _flat_objective(x, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates)
-    g = lambda x: _flat_grad_objective(
-        x, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
-    )
-    prox = lambda x, stepsize: _flat_prox(x, stepsize, mu_pri, sigmasq_pri, hazard_rates)
-
     # The optimization library COPT operates on parameter vectors.
     # Wrap the objective and gradient above to take take flattened vectors
     # Use tree flatten and unflatten to convert params x0 from PyTrees to flat arrays
     x0_flat, unravel = ravel_pytree(x0)
+
+    # Close over the global hyperparameters
+    f = lambda x: _flat_objective(
+        unravel, x, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
+    )
+    g = lambda x: _flat_grad_objective(
+        unravel, x, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
+    )
+    prox = lambda x, stepsize: _flat_prox(unravel, x, stepsize, mu_pri, sigmasq_pri, hazard_rates)
 
     results = minimize_proximal_gradient(
         fun=jit(f),
