@@ -1,17 +1,20 @@
-from pathlib import Path
-
-import jax.random as jr
+import click
 import jax.numpy as jnp
+import jax.random as jr
 from jax import vmap, jit
 import matplotlib.pyplot as plt
 from fastprogress import progress_bar
-from sklearn.decomposition import PCA, FactorAnalysis
+from sklearn.decomposition import PCA
+from tensorflow_probability.substrates import jax as tfp
+
+tfd = tfp.distributions
 
 import bayes_ca.inference as core
+from bayes_ca.prox_grad import pgd
 from bayes_ca.data import naturalistic_data
 
 
-# @jit
+@jit
 def gibbs_sample_subject_means(
     key, subj_obs, sigmasq_obs, global_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
 ):
@@ -28,108 +31,103 @@ def gibbs_sample_subject_means(
 
 
 # @jit
-def prox_update_global_mean(
-    stepsize, global_means, subj_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
-):
-    # Use exponential family magic to compute gradient of the
-    # smooth part of the objective (not including the CP prior)
-    _, _, _, expected_subj_means = core.gaussian_cp_smoother(
-        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
-    )
-    g = 1 / sigmasq_subj * jnp.sum(subj_means - expected_subj_means, axis=0)  # sum over subjects
-
-    # Compute the proximal update by taking a step in the direction of the gradient
-    # and using the posterior mode to find the new global states
-    effective_emissions = global_means + stepsize * g
-    return core.gaussian_cp_posterior_mode(
-        effective_emissions, hazard_rates, mu_pri, sigmasq_pri, jnp.repeat(stepsize, num_features)
-    )[1]
-
-
-@jit
 def step(
-    key,
-    stepsize,
-    subj_obs,
-    sigmasq_obs,
-    global_means,
-    sigmasq_subj,
-    mu_pri,
-    sigmasq_pri,
-    hazard_rates,
+    key, subj_obs, sigmasq_obs, global_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
 ):
+
     # Sample new subject means
     subj_means = gibbs_sample_subject_means(
         key, subj_obs, sigmasq_obs, global_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
     )
 
     # Update the global mean
-    global_means = prox_update_global_mean(
-        stepsize, global_means, subj_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
+    result = pgd(global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates)
+    global_means = result.x
+
+    joint_lp = core.joint_lp(
+        global_means, subj_means, subj_obs, mu_pri, sigmasq_pri, sigmasq_obs, hazard_rates
     )
 
-    return global_means, subj_means
+    return global_means, subj_means, joint_lp
 
 
-# load experimental data
-data_dir = Path("/", "Users", "emdupre", "Desktop", "brainiak_data")
-bold = naturalistic_data(data_dir)
-train = bold[..., :8].T
-test = bold[..., 8:].T
+@click.command()
+@click.option("--seed", default=0, help="Random seed.")
+@click.option("--mu_pri", default=0.0, help="")
+@click.option("--sigmasq_pri", default=3.0**2, help="")
+@click.option("--sigmasq_subj", default=0.1**2, help="")
+@click.option("--hazard_prob", default=0.01, help="")
+@click.option(
+    "--data_dir", default="/Users/emdupre/Desktop/brainiak_data", help="Data directory."
+)
+def main(
+    seed,
+    data_dir,
+    mu_pri,
+    sigmasq_pri,
+    sigmasq_subj,
+    hazard_prob,
+):
+    """
 
-# look at variance explained in one train subject
-pca = PCA(n_components=0.90).fit(train[0])
-PC_values = jnp.arange(pca.n_components_) + 1
-plt.plot(PC_values, pca.explained_variance_ratio_, "o-")
-plt.title("Scree Plot")
-plt.xlabel("Principal Component")
-plt.ylabel("Variance Explained")
-plt.show()
+    Parameters
+    ----------
 
-pca_train = jnp.asarray([PCA(n_components=25).fit_transform(t) for t in train])
-num_subjects, num_timesteps, num_features = pca_train.shape
+    Returns
+    -------
+    """
+    key = jr.PRNGKey(seed)
 
-# initialize random key for sampling
-key = jr.PRNGKey(0)
-this_key, key = jr.split(key)
+    bold = naturalistic_data(data_dir=data_dir)
+    train = bold[..., :8].T
 
-# set relevant hyperparams
-num_states = 100
-max_duration = num_states + 1
-hazard_prob = 0.01
-hazard_rates = hazard_prob * jnp.ones(max_duration)
-hazard_rates = hazard_rates.at[-1].set(1.0)
+    # look at variance explained in one train subject
+    pca = PCA(n_components=0.90).fit(train[0])
+    PC_values = jnp.arange(pca.n_components_) + 1
+    plt.plot(PC_values, pca.explained_variance_ratio_, "o-")
+    plt.title("Scree Plot")
+    plt.xlabel("Principal Component")
+    plt.ylabel("Variance Explained")
+    plt.show()
 
-mu_pri = jnp.repeat(0.0, num_features)
-sigmasq_pri = 3.0**2
-sigmasq_subj = 0.5 * sigmasq_pri  # Note: variance of jump size is 2 * sigmasq_pri
-sigmasq_obs = jnp.var(train)  # flattened variance of training sample
+    pca_train = jnp.asarray([PCA(n_components=25).fit_transform(t) for t in train])
+    _, num_timesteps, num_features = pca_train.shape
 
-mu_pri = core._safe_handling_params(mu_pri, num_features)
-sigmasq_pri = core._safe_handling_params(sigmasq_pri, num_features)
-sigmasq_subj = core._safe_handling_params(sigmasq_subj, num_features)
+    # model settings
+    mu_pri = core._safe_handling_params(mu_pri, num_features)
+    sigmasq_pri = core._safe_handling_params(sigmasq_pri, num_features)
+    sigmasq_subj = core._safe_handling_params(sigmasq_subj, num_features)
+    sigmasq_obs = jnp.sqrt(jnp.var(pca_train, axis=(0, 1)))
 
-stepsize = 0.001
-global_means = jnp.zeros((num_timesteps, num_features))
+    num_states = num_timesteps
+    max_duration = num_states + 1
 
-for itr in progress_bar(range(10000)):
-    this_key, key = jr.split(key)
-    global_means, subj_means = step(
-        this_key,
-        stepsize,
-        pca_train,
-        sigmasq_obs,
-        global_means,
-        sigmasq_subj,
-        mu_pri,
-        sigmasq_pri,
-        hazard_rates,
-    )
+    hazard_rates = hazard_prob * jnp.ones(max_duration)
+    hazard_rates = hazard_rates.at[-1].set(1.0)
+
+    # create train split and initialize globals
+    global_means = jnp.mean(pca_train, axis=0)
+
+    training_lp = []
+    for _ in progress_bar(range(100)):
+        this_key, key = jr.split(key)
+        global_means, subj_means, joint_lp = step(
+            this_key,
+            pca_train,
+            sigmasq_obs,
+            global_means,
+            sigmasq_subj,
+            mu_pri,
+            sigmasq_pri,
+            hazard_rates,
+        )
+        training_lp.append(joint_lp)
+
+    l = plt.plot(subj_means[0], label=f"sampled $\mu^n$ for subj. 0")[0]
+    plt.plot(pca_train[0], "o", color=l.get_color(), alpha=0.1, lw=3)
+    plt.plot(global_means, label="sampled $\mu^0$")
+    plt.legend()
 
 
-plt.plot(global_means[:, 0], c="black", label="global")
-for i in range(1):
-    l = plt.plot(subj_means[i,:,0], alpha=0.8)[0]
-    plt.plot(pca_train[i, :, 0], ".", color=l.get_color(), alpha=0.2)
-plt.legend()
-plt.show()
+if __name__ == "__main__":
+    main()
