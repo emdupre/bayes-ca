@@ -614,3 +614,37 @@ def sample_gaussian_cp_model(
     _, (zs, mus) = scan(_step, initial_carry, jr.split(key, num_timesteps))
 
     return zs, mus
+
+
+def joint_lp(
+    global_means: Float[Array, "num_timesteps num_features"],
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    subj_obs: Float[Array, "num_subjects num_timesteps num_features"],
+    mu0: Float,
+    sigmasq0: Float,
+    sigmasq_obs: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Parameters
+    ----------
+
+    Returns
+    -------
+    """
+    max_duration = len(hazard_rates)
+    # log prob for mu_0 | prior mean, prior var
+    lp_global_means = tfd.Normal(mu0, jnp.sqrt(sigmasq0)).log_prob(global_means).sum()
+
+    # log prob for y_n | mu_n, sigmasq_obs
+    _lp_obs_one = lambda means, obs: tfd.Normal(means, jnp.sqrt(sigmasq_obs)).log_prob(obs)
+    lp_obs = vmap(_lp_obs_one)(subj_means, subj_obs).sum()
+
+    # log prob of run lengths under the geometric prior
+    changepoint_dist = tfd.Geometric(probs=hazard_rates)
+    zs = jnp.unique(global_means, return_counts=True, size=max_duration, fill_value=jnp.nan)[1]
+    lp_zs = jnp.where(zs > 0, changepoint_dist.log_prob(zs), 0).sum()
+
+    # sum all log probs
+    joint_lp = lp_global_means + lp_obs + lp_zs
+    return joint_lp
