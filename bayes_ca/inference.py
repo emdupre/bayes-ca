@@ -622,6 +622,31 @@ def sample_gaussian_cp_model(
     return zs, mus
 
 
+def changepoint_prior_lp(x: Float[Array, "num_timesteps num_features"],
+                         mu_pri: Float,
+                         sigmasq_pri: Float, 
+                         hazard_rates: Float[Array, "max_duration"]) \
+                            -> float:
+    """Compute prior log probability of a piecewise constant time series
+    under a change point prior. 
+    """    
+    # Find the changepoints
+    cp = jnp.concatenate([jnp.array([True], dtype=bool), x[1:] != x[:-1]])
+    lp = tfp.where(cp, tfd.Normal(mu_pri, jnp.sqrt(sigmasq_pri)).log_prob(x), 0.0).sum()
+    
+    # Compute the log prob of each piecewise constant value
+    # NOTE: Assume that if there's a changepoint in the first feature, then
+    # all features must change at the same time.
+    _, x_durs = jnp.unique(
+        x[:, 0], return_counts=True, size=len(x), fill_value=jnp.nan
+    )
+
+    # TODO: Compute the duration pmf from the hazard rates
+    changepoint_dist = tfd.Geometric(probs=hazard_rates)
+    lp += jnp.where(x_durs > 0, changepoint_dist.log_prob(x_durs), 0).sum()
+    return lp
+
+
 def joint_lp(
     global_means: Float[Array, "num_timesteps num_features"],
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
@@ -639,30 +664,43 @@ def joint_lp(
     Returns
     -------
     """
-    max_duration = len(hazard_rates)
-    # log prob for mu_0 | prior mean, prior var
-    vals_zs, counts_zs = jnp.unique(
-        global_means, return_counts=True, size=max_duration, fill_value=jnp.nan
-    )
-    lp_global_means = tfd.Normal(mu_pri, jnp.sqrt(sigmasq_pri)).log_prob(vals_zs).sum()
+    # log p(mu_0)
+    lp = changepoint_prior_lp(global_means, mu_pri, sigmasq_pri, hazard_rates)
 
-    # log prob mu_n | mu_0
-    log_normalizer, _, _, expected_subj_means = gaussian_cp_smoother(
-        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
-    )
-    lls = _compute_gaussian_lls(
-        expected_subj_means, max_duration, mu_pri, sigmasq_pri, sigmasq_subj
-    )
-    lp_subj_means = lp_global_means + lls - log_normalizer
+    # log p(mu_n | mu_0) 
+    # TODO: Map over subjects
+    lp += changepoint_prior_lp(subj_means[i], mu_pri, sigmasq_pri, hazard_rates)
+    lp += tfd.Normal(subj_means[i], jnp.sqrt(sigmasq_subj)).log_prob(global_means).sum()
+    lp -= log_normalizer
 
-    # log prob of run lengths under the geometric prior
-    changepoint_dist = tfd.Geometric(probs=hazard_rates)
-    lp_zs = jnp.where(counts_zs > 0, changepoint_dist.log_prob(counts_zs), 0).sum()
+    # log p(x_n | mu_n)
+    # TODO
 
-    # log prob for y_n | mu_n, sigmasq_obs
-    _lp_obs_one = lambda means, obs: tfd.Normal(means, jnp.sqrt(sigmasq_obs)).log_prob(obs)
-    lp_obs = vmap(_lp_obs_one)(subj_means, subj_obs).sum()
+    ## OLD
+    # max_duration = len(hazard_rates)
+    # # log prob for mu_0 | prior mean, prior var
+    # vals_zs, counts_zs = jnp.unique(
+    #     global_means, return_counts=True, size=max_duration, fill_value=jnp.nan
+    # )
+    # lp_global_means = tfd.Normal(mu_pri, jnp.sqrt(sigmasq_pri)).log_prob(vals_zs).sum()
 
-    # sum all log probs
-    joint_lp = lp_global_means + lp_subj_means + lp_obs + lp_zs
-    return joint_lp
+    # # log prob mu_n | mu_0
+    # log_normalizer, _, _, expected_subj_means = gaussian_cp_smoother(
+    #     global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
+    # )
+    # lls = _compute_gaussian_lls(
+    #     expected_subj_means, max_duration, mu_pri, sigmasq_pri, sigmasq_subj
+    # )
+    # lp_subj_means = lp_global_means + lls - log_normalizer
+
+    # # log prob of run lengths under the geometric prior
+    # changepoint_dist = tfd.Geometric(probs=hazard_rates)
+    # lp_zs = jnp.where(counts_zs > 0, changepoint_dist.log_prob(counts_zs), 0).sum()
+
+    # # log prob for y_n | mu_n, sigmasq_obs
+    # _lp_obs_one = lambda means, obs: tfd.Normal(means, jnp.sqrt(sigmasq_obs)).log_prob(obs)
+    # lp_obs = vmap(_lp_obs_one)(subj_means, subj_obs).sum()
+
+    # # sum all log probs
+    # joint_lp = lp_global_means + lp_subj_means + lp_obs + lp_zs
+    # return joint_lp
