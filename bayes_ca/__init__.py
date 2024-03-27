@@ -1,5 +1,4 @@
 from .inference import (
-    _safe_handling_params,
     _compute_gaussian_lls,
     _compute_gaussian_stats,
     cp_filter,
@@ -14,3 +13,5 @@ from .inference import (
 )
 
 from .prox_grad import pgd
+
+from ._utils import _safe_handling_params

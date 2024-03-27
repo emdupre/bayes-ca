@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 from jax import vmap
 import jax.numpy as jnp
@@ -9,29 +9,6 @@ from jaxtyping import Array, Float, Int
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
-
-
-def _safe_handling_params(param: Union[Float, Float[Array, "num_features"]], num_features: Int):
-    """
-    Coerces supplied parameter to have shape (num_features, ).
-
-    Parameters
-    ----------
-    param: float or array
-    num_features: int
-    """
-    if isinstance(param, float):
-        return jnp.asarray([param]) * jnp.ones(num_features)
-    elif isinstance(param, Array):
-        coerced = jnp.squeeze(param)  # drop any trailing dimensions
-        if (num_features > 1) and (coerced.shape[0] != num_features):
-            raise ValueError(f"Array of shape {coerced.shape} does not match num_features.")
-        else:
-            return coerced
-    else:
-        raise TypeError(
-            f"Param of type {param.dtype} not understood. Supported types are float or Array."
-        )
 
 
 def _normalize(
@@ -536,12 +513,7 @@ def gaussian_cp_smoother(
     """
     max_duration = hazard_rates.shape[0]
     num_states = max_duration - 1
-
-    # try:
     _, num_features = emissions.shape
-    # except ValueError:
-    #     num_features = 1
-    #     emissions = emissions[:, None]
 
     # First compute the most likely run lengths)
     if num_features > 1:
@@ -622,28 +594,32 @@ def sample_gaussian_cp_model(
     return zs, mus
 
 
-def changepoint_prior_lp(x: Float[Array, "num_timesteps num_features"],
-                         mu_pri: Float,
-                         sigmasq_pri: Float, 
-                         hazard_rates: Float[Array, "max_duration"]) \
-                            -> float:
+def changepoint_prior_lp(
+    x: Float[Array, "num_timesteps num_features"],
+    mu_pri: Float,
+    sigmasq_pri: Float,
+    hazard_rates: Float[Array, "max_duration"],
+) -> float:
     """Compute prior log probability of a piecewise constant time series
-    under a change point prior. 
-    """    
+    under a change point prior.
+    """
     # Find the changepoints
-    cp = jnp.concatenate([jnp.array([True], dtype=bool), x[1:] != x[:-1]])
-    lp = tfp.where(cp, tfd.Normal(mu_pri, jnp.sqrt(sigmasq_pri)).log_prob(x), 0.0).sum()
-    
+    cp = jnp.concatenate([jnp.array([True], dtype=bool)[:, jnp.newaxis], x[1:] != x[:-1]])
+    lp = jnp.where(cp, tfd.Normal(mu_pri, jnp.sqrt(sigmasq_pri)).log_prob(x), 0.0).sum()
+
     # Compute the log prob of each piecewise constant value
     # NOTE: Assume that if there's a changepoint in the first feature, then
     # all features must change at the same time.
-    _, x_durs = jnp.unique(
-        x[:, 0], return_counts=True, size=len(x), fill_value=jnp.nan
+    _, x_durs = jnp.unique(x[:, 0], return_counts=True, size=len(x), fill_value=jnp.nan)
+    hazard_lp = jnp.concatenate(
+        [
+            jnp.array([0]),
+            jnp.log(hazard_rates)
+            + jnp.concatenate([jnp.array([0]), jnp.cumsum(jnp.log1p(-hazard_rates[:-1]))]),
+        ]
     )
 
-    # TODO: Compute the duration pmf from the hazard rates
-    changepoint_dist = tfd.Geometric(probs=hazard_rates)
-    lp += jnp.where(x_durs > 0, changepoint_dist.log_prob(x_durs), 0).sum()
+    lp += hazard_lp[x_durs].sum()
     return lp
 
 
@@ -667,40 +643,21 @@ def joint_lp(
     # log p(mu_0)
     lp = changepoint_prior_lp(global_means, mu_pri, sigmasq_pri, hazard_rates)
 
-    # log p(mu_n | mu_0) 
-    # TODO: Map over subjects
-    lp += changepoint_prior_lp(subj_means[i], mu_pri, sigmasq_pri, hazard_rates)
-    lp += tfd.Normal(subj_means[i], jnp.sqrt(sigmasq_subj)).log_prob(global_means).sum()
+    # log p(mu_n | mu_0)
+    lp += vmap(changepoint_prior_lp, in_axes=(0, None, None, None))(
+        subj_means, mu_pri, sigmasq_pri, hazard_rates
+    ).sum()
+    _lp_mean_one = lambda means: tfd.Normal(means, jnp.sqrt(sigmasq_subj)).log_prob(global_means)
+    lp += vmap(_lp_mean_one)(subj_means).sum()
+
+    # subtract log normalizer
+    log_normalizer, _, _, _ = gaussian_cp_smoother(
+        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
+    )
     lp -= log_normalizer
 
-    # log p(x_n | mu_n)
-    # TODO
+    # log p(y_n | mu_n)
+    _lp_obs_one = lambda means, obs: tfd.Normal(means, jnp.sqrt(sigmasq_obs)).log_prob(obs)
+    lp += vmap(_lp_obs_one)(subj_means, subj_obs).sum()
 
-    ## OLD
-    # max_duration = len(hazard_rates)
-    # # log prob for mu_0 | prior mean, prior var
-    # vals_zs, counts_zs = jnp.unique(
-    #     global_means, return_counts=True, size=max_duration, fill_value=jnp.nan
-    # )
-    # lp_global_means = tfd.Normal(mu_pri, jnp.sqrt(sigmasq_pri)).log_prob(vals_zs).sum()
-
-    # # log prob mu_n | mu_0
-    # log_normalizer, _, _, expected_subj_means = gaussian_cp_smoother(
-    #     global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
-    # )
-    # lls = _compute_gaussian_lls(
-    #     expected_subj_means, max_duration, mu_pri, sigmasq_pri, sigmasq_subj
-    # )
-    # lp_subj_means = lp_global_means + lls - log_normalizer
-
-    # # log prob of run lengths under the geometric prior
-    # changepoint_dist = tfd.Geometric(probs=hazard_rates)
-    # lp_zs = jnp.where(counts_zs > 0, changepoint_dist.log_prob(counts_zs), 0).sum()
-
-    # # log prob for y_n | mu_n, sigmasq_obs
-    # _lp_obs_one = lambda means, obs: tfd.Normal(means, jnp.sqrt(sigmasq_obs)).log_prob(obs)
-    # lp_obs = vmap(_lp_obs_one)(subj_means, subj_obs).sum()
-
-    # # sum all log probs
-    # joint_lp = lp_global_means + lp_subj_means + lp_obs + lp_zs
-    # return joint_lp
+    return lp
