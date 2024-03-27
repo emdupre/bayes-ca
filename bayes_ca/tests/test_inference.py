@@ -2,11 +2,9 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jax.lax import conv
-
 import dynamax.hidden_markov_model.inference as hmm
 
 from bayes_ca.inference import (
-    _safe_handling_params,
     _compute_gaussian_stats,
     _compute_gaussian_lls,
     cp_filter,
@@ -16,6 +14,7 @@ from bayes_ca.inference import (
     gaussian_cp_smoother,
     sample_gaussian_cp_model,
 )
+from bayes_ca._utils import _safe_handling_params
 
 # Test
 key = jr.PRNGKey(0)
