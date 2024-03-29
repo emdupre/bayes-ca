@@ -12,6 +12,7 @@ tfd = tfp.distributions
 import bayes_ca.inference as core
 from bayes_ca.prox_grad import pgd
 from bayes_ca.data import naturalistic_data
+from bayes_ca._utils import _safe_handling_params
 
 
 @jit
@@ -41,11 +42,20 @@ def step(
     )
 
     # Update the global mean
-    result = pgd(global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates)
+    result, loss, init_loss = pgd(
+        global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
+    )
     global_means = result.x
 
     joint_lp = core.joint_lp(
-        global_means, subj_means, subj_obs, mu_pri, sigmasq_pri, sigmasq_obs, hazard_rates
+        global_means,
+        subj_means,
+        subj_obs,
+        mu_pri,
+        sigmasq_pri,
+        sigmasq_subj,
+        sigmasq_obs,
+        hazard_rates,
     )
 
     return global_means, subj_means, joint_lp
@@ -57,17 +67,11 @@ def step(
 @click.option("--sigmasq_pri", default=3.0**2, help="")
 @click.option("--sigmasq_subj", default=0.1**2, help="")
 @click.option("--hazard_prob", default=0.01, help="")
+@click.option("--max_duration", default=100, help="")
 @click.option(
     "--data_dir", default="/Users/emdupre/Desktop/brainiak_data", help="Data directory."
 )
-def main(
-    seed,
-    data_dir,
-    mu_pri,
-    sigmasq_pri,
-    sigmasq_subj,
-    hazard_prob,
-):
+def main(seed, data_dir, mu_pri, sigmasq_pri, sigmasq_subj, hazard_prob, max_duration):
     """
 
     Parameters
@@ -94,24 +98,22 @@ def main(
     _, num_timesteps, num_features = pca_train.shape
 
     # model settings
-    mu_pri = core._safe_handling_params(mu_pri, num_features)
-    sigmasq_pri = core._safe_handling_params(sigmasq_pri, num_features)
-    sigmasq_subj = core._safe_handling_params(sigmasq_subj, num_features)
+    mu_pri = _safe_handling_params(mu_pri, num_features)
+    sigmasq_pri = _safe_handling_params(sigmasq_pri, num_features)
+    sigmasq_subj = _safe_handling_params(sigmasq_subj, num_features)
     sigmasq_obs = jnp.sqrt(jnp.var(pca_train, axis=(0, 1)))
 
-    num_states = num_timesteps
-    max_duration = num_states + 1
-
+    max_duration = max_duration
     hazard_rates = hazard_prob * jnp.ones(max_duration)
     hazard_rates = hazard_rates.at[-1].set(1.0)
 
     # create train split and initialize globals
     global_means = jnp.mean(pca_train, axis=0)
 
-    training_lp = []
+    lps = []
     for _ in progress_bar(range(100)):
         this_key, key = jr.split(key)
-        global_means, subj_means, joint_lp = step(
+        global_means, subj_means, train_lp = step(
             this_key,
             pca_train,
             sigmasq_obs,
@@ -121,11 +123,12 @@ def main(
             sigmasq_pri,
             hazard_rates,
         )
-        training_lp.append(joint_lp)
+        lps.append(train_lp)
 
-    l = plt.plot(subj_means[0], label=f"sampled $\mu^n$ for subj. 0")[0]
-    plt.plot(pca_train[0], "o", color=l.get_color(), alpha=0.1, lw=3)
-    plt.plot(global_means, label="sampled $\mu^0$")
+    l = plt.plot(subj_means[0][:, 0], label=f"sampled $\mu^n$ for subj. 0")[0]
+    plt.plot(pca_train[0][:, 0], "o", color=l.get_color(), alpha=0.1, lw=3)
+    plt.plot(global_means[:, 0], label="sampled $\mu^0$")
+    plt.title(f"first feature of sampled means, sigmasq_subj : {jnp.sqrt(sigmasq_subj)}$^2$")
     plt.legend()
 
 
