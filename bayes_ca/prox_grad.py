@@ -1,8 +1,11 @@
+from functools import partial
+from typing import Callable
+
 import jax.numpy as jnp
 from jax import jit, vmap
-from jaxtyping import Array, Float
 from jax.flatten_util import ravel_pytree
 from copt import minimize_proximal_gradient
+from jaxtyping import Bool, Array, Float, Int
 
 from bayes_ca import inference as core
 
@@ -10,8 +13,8 @@ from bayes_ca import inference as core
 def _objective(
     global_means: Float[Array, "num_timesteps num_features"],
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-    mu0: Float,
-    sigmasq0: Float,
+    mu_pri: Float,
+    sigmasq_pri: Float,
     sigmasq_subj: Float,
     hazard_rates: Float[Array, "max_duration"],
 ):
@@ -21,7 +24,7 @@ def _objective(
     than minimizing the function, as COPT is designed to do.
     """
     log_normalizer, _, _, _ = core.gaussian_cp_smoother(
-        global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
+        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
     )
 
     def _single_objective(subj_mean):
@@ -33,8 +36,8 @@ def _objective(
 def _grad_objective(
     global_means: Float[Array, "num_timesteps num_features"],
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-    mu0: Float,
-    sigmasq0: Float,
+    mu_pri: Float,
+    sigmasq_pri: Float,
     sigmasq_subj: Float,
     hazard_rates: Float[Array, "max_duration"],
 ):
@@ -44,7 +47,7 @@ def _grad_objective(
     than minimizing the function, as COPT is designed to do.
     """
     _, _, _, expected_subj_means = core.gaussian_cp_smoother(
-        global_means, hazard_rates, mu0, sigmasq0, sigmasq_subj
+        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
     )
 
     def _single_grad(subj_mean):
@@ -53,13 +56,13 @@ def _grad_objective(
     return -1 * vmap(_single_grad)(subj_means).sum(axis=0)
 
 
-# @jit
+@partial(jit, static_argnames=["unravel"])
 def _flat_objective(
-    unravel,
-    _flat_global_means,
+    _flat_global_means: Array,
+    unravel: Callable,
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-    mu0: Float,
-    sigmasq0: Float,
+    mu_pri: Float,
+    sigmasq_pri: Float,
     sigmasq_subj: Float,
     hazard_rates: Float[Array, "max_duration"],
 ):
@@ -67,16 +70,16 @@ def _flat_objective(
     Flatten the objective to work with copt
     """
     global_means = unravel(_flat_global_means)
-    return _objective(global_means, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates)
+    return _objective(global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates)
 
 
-# @jit
+@partial(jit, static_argnames=["unravel"])
 def _flat_grad_objective(
-    unravel,
     _flat_global_means,
+    unravel,
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
-    mu0: Float,
-    sigmasq0: Float,
+    mu_pri: Float,
+    sigmasq_pri: Float,
     sigmasq_subj: Float,
     hazard_rates: Float[Array, "max_duration"],
 ):
@@ -84,17 +87,17 @@ def _flat_grad_objective(
     Flatten the gradient to work with copt
     """
     global_means = unravel(_flat_global_means)
-    g = _grad_objective(global_means, subj_means, mu0, sigmasq0, sigmasq_subj, hazard_rates)
+    g = _grad_objective(global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates)
     return ravel_pytree(g)[0]
 
 
-# @jit
+@partial(jit, static_argnames=["unravel"])
 def _flat_prox(
-    unravel,
     _flat_global_means,
+    unravel,
     step_size: Float,
-    mu0: Float,
-    sigmasq0: Float,
+    mu_pri: Float,
+    sigmasq_pri: Float,
     hazard_rates: Float[Array, "max_duration"],
 ):
     """
@@ -104,7 +107,7 @@ def _flat_prox(
     global_means = unravel(_flat_global_means)
     _, num_features = global_means.shape
     x_next = core.gaussian_cp_posterior_mode(
-        global_means, hazard_rates, mu0, sigmasq0, jnp.repeat(step_size, num_features)
+        global_means, hazard_rates, mu_pri, sigmasq_pri, jnp.repeat(step_size, num_features)
     )[1]
     return ravel_pytree(x_next)[0]
 
@@ -116,12 +119,12 @@ def pgd(
     sigmasq_pri: Float,
     sigmasq_subj: Float,
     hazard_rates: Float[Array, "max_duration"],
-    tol=1e-06,
-    max_iter=500,
-    accelerated=False,
-    max_iter_backtracking=1000,
-    backtracking_factor=0.6,
-    trace_certificate=False,
+    tol: Float = 1e-06,
+    max_iter: Int = 500,
+    accelerated: Bool = False,
+    max_iter_backtracking: Int = 1000,
+    backtracking_factor: Float = 0.6,
+    trace_certificate: Bool = False,
 ):
     """
     Parameters
@@ -166,20 +169,20 @@ def pgd(
     # Use tree flatten and unflatten to convert params x0 from PyTrees to flat arrays
     x0_flat, unravel = ravel_pytree(x0)
 
-    # Close over the global hyperparameters
+    # Close over the global hyperparameters:
     f = lambda x: _flat_objective(
-        unravel, x, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
+        x, unravel, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
     )
     g = lambda x: _flat_grad_objective(
-        unravel, x, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
+        x, unravel, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
     )
-    prox = lambda x, stepsize: _flat_prox(unravel, x, stepsize, mu_pri, sigmasq_pri, hazard_rates)
+    prox = lambda x, stepsize: _flat_prox(x, unravel, stepsize, mu_pri, sigmasq_pri, hazard_rates)
 
     results = minimize_proximal_gradient(
-        fun=jit(f),
+        fun=f,
         x0=x0_flat,
-        prox=jit(prox),
-        jac=jit(g),
+        prox=prox,
+        jac=g,
         tol=tol,
         max_iter=max_iter,
         accelerated=accelerated,

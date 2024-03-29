@@ -31,7 +31,6 @@ def gibbs_sample_subject_means(
     return vmap(_sample_one)(jr.split(key, num_subjects), effective_emissions)
 
 
-# @jit
 def step(
     key, subj_obs, sigmasq_obs, global_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
 ):
