@@ -188,5 +188,7 @@ def pgd(
         trace_certificate=trace_certificate,
     )
     # pack the output back into a PyTree
+    init_loss = f(x0_flat)
+    loss = f(results["x"])
     results["x"] = unravel(results["x"])
-    return results
+    return results, loss, init_loss
