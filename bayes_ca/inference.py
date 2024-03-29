@@ -603,8 +603,12 @@ def changepoint_prior_lp(
     """Compute prior log probability of a piecewise constant time series
     under a change point prior.
     """
+    _, num_features = x.shape
+    # make a boolean True vector of size (1, num_features)
+    init_bool = jnp.repeat(jnp.array([True], dtype=bool)[:, jnp.newaxis], num_features, axis=1)
+
     # Find the changepoints
-    cp = jnp.concatenate([jnp.array([True], dtype=bool)[:, jnp.newaxis], x[1:] != x[:-1]])
+    cp = jnp.concatenate([init_bool, x[1:] != x[:-1]])
     lp = jnp.where(cp, tfd.Normal(mu_pri, jnp.sqrt(sigmasq_pri)).log_prob(x), 0.0).sum()
 
     # Compute the log prob of each piecewise constant value
