@@ -3,6 +3,7 @@ from typing import Callable
 
 import jax.numpy as jnp
 from jax import jit, vmap
+from jaxopt import ProximalGradient
 from jax.flatten_util import ravel_pytree
 from copt import minimize_proximal_gradient
 from jaxtyping import Bool, Array, Float, Int
@@ -54,6 +55,70 @@ def _grad_objective(
         return 1 / sigmasq_subj * (subj_mean - expected_subj_means)
 
     return -1 * vmap(_single_grad)(subj_means).sum(axis=0)
+
+
+def _fun_grad_objective(
+    x: Float[Array, "num_timesteps num_features"],
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    mu_pri: Float,
+    sigmasq_pri: Float,
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Parameters
+    ----------
+    x : ndarray
+        Initial estimate of global means, shape (T x N)
+    subj_means: ndarray
+        Estimated subject means of shape (S x T x N)
+    mu_pri: float or ndarray
+        Prior mean
+    sigmasq_pri: float or ndarray
+        Prior variance
+    sigmasq_subj: float or ndarray
+        Hierarchical variance
+    hazard_rates: ndarray
+        of shape (K,)
+
+    Returns
+    -------
+    f : float
+    grad : ndarray
+    """
+    log_normalizer, _, _, expected_subj_means = core.gaussian_cp_smoother(
+        x, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
+    )
+
+    def _single_fun_grad(subj_mean):
+        f = -0.5 / sigmasq_subj * jnp.sum((subj_mean - x) ** 2) - log_normalizer
+        g = 1 / sigmasq_subj * (subj_mean - expected_subj_means)
+        return f, g
+
+    fun, grad = vmap(_single_fun_grad)(subj_means)
+    return -1 * fun.sum(), -1 * grad.sum(axis=0)
+
+
+def _prox(
+    x: Float[Array, "num_timesteps num_features"],
+    hyperparams,
+    scale: Float = 1.0,
+):
+    """
+    Parameters
+    ----------
+    x : ndarray
+        Initial estimate of global means, shape (T x N)
+    hyperparams : tuple
+    scale : float
+        Ignored, required for compatibility with ProximalGradient
+    """
+    stepsize, mu_pri, sigmasq_pri, hazard_rates = hyperparams
+    _, num_features = x.shape
+    _, x_next = core.gaussian_cp_posterior_mode(
+        x, hazard_rates, mu_pri, sigmasq_pri, jnp.repeat(stepsize, num_features)
+    )
+    return x_next
 
 
 @partial(jit, static_argnames=["unravel"])
@@ -195,3 +260,80 @@ def pgd(
     loss = f(results["x"])
     results["x"] = unravel(results["x"])
     return results, loss, init_loss
+
+
+def pgd_jaxopt(
+    x0: Float[Array, "num_timesteps num_features"],
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    mu_pri: Float,
+    sigmasq_pri: Float,
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+    maxiter: Int = 500,
+    maxls: Int = 15,
+    tol: Float = 1e-06,
+    acceleration: Bool = False,
+    decrease_factor: Float = 0.5,
+):
+    """
+    jaxopt.ProximalGradient requires two functions:
+
+    - a smooth function of the form fun(x, *args, **kwargs), returning
+      scalar value and gradient
+    - a proximity operator associated with the non_smooth part of the
+      function. It should be of the form prox(params, hyperparams_prox, scale=1.0).
+      See jaxopt.prox for examples.
+
+    Parameters
+    ----------
+    x0 : ndarray
+        Initial estimate of global means, shape (T x N)
+    subj_means: ndarray
+        Estimated subject means of shape (S x T x N)
+    mu_pri: float or ndarray
+        Prior mean
+    sigmasq_pri: float or ndarray
+        Prior variance
+    sigmasq_subj: float or ndarray
+        Hierarchical variance
+    hazard_rates: ndarray
+        of shape (K,)
+    max_iter: int, optional
+         Maximum number of iterations
+    maxls: int, optional
+        Maximum number of iterations for backtracking line search
+    tol: float, optional
+        iteration stops when the gradient mapping is below this tolerance.
+    acceleration : bool, optional
+        Whether or not to use the accelerated variant of the Backtracking
+        line search algorithm (FISTA)
+    decrease_factor: float, optional
+        Value by which to shrink stepsize on each backtracking iteration
+
+    Returns
+    -------
+    OptStep
+    """
+
+    pg = ProximalGradient(
+        fun=_fun_grad_objective,
+        prox=_prox,
+        value_and_grad=True,
+        stepsize=-1,
+        maxiter=maxiter,
+        maxls=maxls,
+        tol=tol,
+        acceleration=acceleration,
+        decrease_factor=decrease_factor,
+        jit=True,
+    )
+    result = pg.run(
+        x0,  # init params
+        (pg.stepsize, mu_pri, sigmasq_pri, hazard_rates),  # hyperparams_prox
+        subj_means,  # begin args passed to fun
+        mu_pri,
+        sigmasq_pri,
+        sigmasq_subj,
+        hazard_rates,
+    )
+    return result
