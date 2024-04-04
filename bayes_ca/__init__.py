@@ -12,6 +12,6 @@ from .inference import (
     gaussian_cp_posterior_sample,
 )
 
-from .prox_grad import pgd
+from .prox_grad import pgd, pgd_jaxopt
 
 from ._utils import _safe_handling_params

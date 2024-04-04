@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable
+from typing import Callable, Union
 
 import jax.numpy as jnp
 from jax import jit, vmap
@@ -102,7 +102,7 @@ def _fun_grad_objective(
 def _prox(
     x: Float[Array, "num_timesteps num_features"],
     hyperparams,
-    scale: Float = 1.0,
+    stepsize: Float = 1.0,
 ):
     """
     Parameters
@@ -113,7 +113,7 @@ def _prox(
     scale : float
         Ignored, required for compatibility with ProximalGradient
     """
-    stepsize, mu_pri, sigmasq_pri, hazard_rates = hyperparams
+    mu_pri, sigmasq_pri, hazard_rates = hyperparams
     _, num_features = x.shape
     _, x_next = core.gaussian_cp_posterior_mode(
         x, hazard_rates, mu_pri, sigmasq_pri, jnp.repeat(stepsize, num_features)
@@ -274,6 +274,7 @@ def pgd_jaxopt(
     tol: Float = 1e-06,
     acceleration: Bool = False,
     decrease_factor: Float = 0.5,
+    jit: Union[str, Bool] = "auto",
 ):
     """
     jaxopt.ProximalGradient requires two functions:
@@ -309,6 +310,8 @@ def pgd_jaxopt(
         line search algorithm (FISTA)
     decrease_factor: float, optional
         Value by which to shrink stepsize on each backtracking iteration
+    jit : bool, optional
+        Whether or not to jit-compile the optimization loop (default: “auto”).
 
     Returns
     -------
@@ -325,11 +328,11 @@ def pgd_jaxopt(
         tol=tol,
         acceleration=acceleration,
         decrease_factor=decrease_factor,
-        jit=True,
+        jit=jit,
     )
     result = pg.run(
         x0,  # init params
-        (pg.stepsize, mu_pri, sigmasq_pri, hazard_rates),  # hyperparams_prox
+        (mu_pri, sigmasq_pri, hazard_rates),  # hyperparams_prox
         subj_means,  # begin args passed to fun
         mu_pri,
         sigmasq_pri,
