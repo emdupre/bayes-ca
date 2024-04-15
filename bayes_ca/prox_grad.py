@@ -11,6 +11,29 @@ from jaxtyping import Bool, Array, Float, Int
 from bayes_ca import inference as core
 
 
+def _debug_objective(
+    global_means: Float[Array, "num_timesteps num_features"],
+    subj_means: Float[Array, "num_subjects num_timesteps num_features"],
+    mu_pri: Float,
+    sigmasq_pri: Float,
+    sigmasq_subj: Float,
+    hazard_rates: Float[Array, "max_duration"],
+):
+    """
+    Compute the function using the 2d params and all the hypers
+    Note that we return the negative for each value, since we are maximizing rather
+    than minimizing the function, as COPT is designed to do.
+    """
+    log_normalizer, _, _, _ = core.gaussian_cp_smoother(
+        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
+    )
+
+    def _single_objective(subj_mean):
+        return -0.5 / sigmasq_subj * jnp.sum((subj_mean - global_means) ** 2) - log_normalizer
+
+    return log_normalizer, -1 * vmap(_single_objective)(subj_means).sum()
+
+
 def _objective(
     global_means: Float[Array, "num_timesteps num_features"],
     subj_means: Float[Array, "num_subjects num_timesteps num_features"],
@@ -256,10 +279,18 @@ def pgd(
         trace_certificate=trace_certificate,
     )
     # pack the output back into a PyTree
-    init_loss = f(x0_flat)
-    loss = f(results["x"])
+    init_lognorm, init_loss = _debug_objective(
+        x0, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
+    )
+    lognorm, loss = _debug_objective(
+        unravel(results["x"]), subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
+    )
     results["x"] = unravel(results["x"])
-    return results, loss, init_loss
+    results["loss"] = loss
+    results["init_loss"] = init_loss
+    results["lognorm"] = lognorm
+    results["init_lognorm"] = init_lognorm
+    return results
 
 
 def pgd_jaxopt(
@@ -330,6 +361,9 @@ def pgd_jaxopt(
         decrease_factor=decrease_factor,
         jit=jit,
     )
+
+    # import jax
+    # with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
     result = pg.run(
         x0,  # init params
         (mu_pri, sigmasq_pri, hazard_rates),  # hyperparams_prox
