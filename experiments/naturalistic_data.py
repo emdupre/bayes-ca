@@ -10,7 +10,7 @@ from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 
 import bayes_ca.inference as core
-from bayes_ca.prox_grad import pgd
+from bayes_ca.prox_grad import pgd, pgd_jaxopt
 from bayes_ca.data import naturalistic_data
 from bayes_ca._utils import _safe_handling_params
 
@@ -31,6 +31,7 @@ def gibbs_sample_subject_means(
     return vmap(_sample_one)(jr.split(key, num_subjects), effective_emissions)
 
 
+# @jit
 def step(
     key, subj_obs, sigmasq_obs, global_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
 ):
@@ -41,10 +42,13 @@ def step(
     )
 
     # Update the global mean
-    result, loss, init_loss = pgd(
-        global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates
-    )
+    result = pgd(global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates)  # 48m
     global_means = result.x
+
+    # result = pgd_jaxopt(  # 55m
+    #     global_means, subj_means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates, jit=True
+    # )
+    # global_means = result.params
 
     joint_lp = core.joint_lp(
         global_means,
