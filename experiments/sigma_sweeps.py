@@ -48,7 +48,6 @@ def sample_mu0(params, num_timesteps, num_features, mu_pri, sigmasq_pri, hazard_
 
 
 def plot_mu0s(
-    x0_strategy,
     mu_pri,
     sigma_pri,
     num_timesteps,
@@ -58,25 +57,24 @@ def plot_mu0s(
     sigma_val,
     n_samples,
 ):
-    """ """
+    """
+    Currently only supports "average" x0_strategy, rather than "true" x0.
+    """
     gaps = jnp.linspace(0, max_gap, n_samples)
 
     mu0s = []
-    means = vmap(stagger_data, in_axes=(0, None, None))(gaps, num_timesteps, num_features)
+    means, x0s = vmap(stagger_data, in_axes=(0, None, None))(gaps, num_timesteps, num_features)
 
-    for m in means:
+    # if x0_strategy == "true":
+    #     # the true changepoint
+    #     x0 = jnp.concatenate(
+    #         (
+    #             -1 * jnp.ones((num_timesteps // 2, num_features)),
+    #             jnp.ones((num_timesteps // 2, num_features)),
+    #         )
+    #     )
 
-        if x0_strategy == "true":
-            # the true changepoint
-            x0 = jnp.concatenate(
-                (
-                    -1 * jnp.ones((num_timesteps // 2, num_features)),
-                    jnp.ones((num_timesteps // 2, num_features)),
-                )
-            )
-        elif x0_strategy == "average":
-            x0 = jnp.average(m, axis=0)
-
+    for m, x0 in zip(means, x0s):
         results = pgd(x0, m, mu_pri, sigma_pri**2, sigma_val**2, hazard_rates)
         mu0s.append(results.x)
 
@@ -114,29 +112,43 @@ def plot_param_sweep(
     sigmas = [jnp.sqrt(s) for s in sigmasqs]
 
     params = jnp.asarray(list(product(sigmasqs, gaps)))
+
+    ## COPT
+    # mu0s = []
+    # means, x0s = vmap(stagger_data, in_axes=(0, None, None))(gaps, num_timesteps, num_features)
+
+    # for sigmasq in sigmasqs:
+    #     for mean, x0 in zip(means, x0s):
+    #         result = pgd(x0, mean, mu_pri, sigma_pri**2, sigmasq, hazard_rates)
+    #         mu0s.append(result.x)
+
+    # JAXOpt
     mu0s = jit(
         vmap(sample_mu0, in_axes=(0, None, None, None, None, None)), static_argnums=(1, 2)
     )(params, num_timesteps, num_features, mu_pri, sigma_pri**2, hazard_rates)
 
-    def _count_changepoints(mu0):
+    def count_changepoints(mu0):
         """ """
         _, counts = jnp.unique(mu0, return_counts=True)
         return jnp.count_nonzero(counts) > 2
 
-    count_cp = jnp.asarray([_count_changepoints(mu0) for mu0 in mu0s])
+    count_cp = jnp.asarray([count_changepoints(mu0) for mu0 in mu0s])
+    sigma_by_gap = jnp.reshape(count_cp, (n_samples, n_samples))
 
-    # check, for sigma values, whether we still have 2 changepoints at increasing
-    # stagger distance...
-    cp_match = jnp.diff(jnp.reshape(count_cp, (n_samples, n_samples)), axis=1)
+    # check, for each sigma value, whether we still have 2 changepoints when
+    # increasing stagger distance...
+    diff_dist = sigma_by_gap[:, :-1] != sigma_by_gap[:, 1:]
+    diff_dist = jnp.insert(diff_dist, 0, False, axis=1)
 
-    # ...and at which index the change to 3 cp's occurs, if it occurs.
-    res = [jnp.nonzero(c, size=1, fill_value=False) for c in cp_match]
+    # ...and at which index the numer of cp's changes, if it occurs.
+    idx = [jnp.nonzero(d, size=1, fill_value=False) for d in diff_dist]
+    gap_threshold = gaps[jnp.asarray(idx)].squeeze()
 
     hazard_prob = hazard_rates[0]
-    b = -jnp.log(hazard_prob / (1 - hazard_prob))
+    beta = -jnp.log(hazard_prob / (1 - hazard_prob))
 
     fig, ax = plt.subplots()
-    ax.plot(sigmas, split)
+    ax.plot(sigmas, gap_threshold)
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
 
@@ -164,7 +176,6 @@ def main(mu_pri, sigma_pri, sigma, hazard_prob, num_features, num_timesteps, x0_
     hazard_rates = hazard_rates.at[-1].set(1.0)
 
     fig1 = plot_mu0s(
-        x0_strategy,
         mu_pri,
         sigma_pri,
         num_timesteps,
