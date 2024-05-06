@@ -47,6 +47,19 @@ def sample_mu0(params, num_timesteps, num_features, mu_pri, sigmasq_pri, hazard_
     return results.params
 
 
+# @partial(jit, static_argnums=(2, 3))
+def sample_mu0_true_x0(
+    params, x0, num_timesteps, num_features, mu_pri, sigmasq_pri, hazard_rates
+):
+    """
+    For provided params, generate sample data and perform PGD to sample $\mu_0$.
+    """
+    sigmasq_subj, gap = params
+    means, _ = stagger_data(gap, num_timesteps, num_features)
+    results = pgd_jaxopt(x0, means, mu_pri, sigmasq_pri, sigmasq_subj, hazard_rates)
+    return results.params
+
+
 def plot_mu0s(
     mu_pri,
     sigma_pri,
@@ -105,7 +118,7 @@ def plot_param_sweep(
     n_samples,
 ):
     """
-    Currently only supports "average" x0_strategy, rather than "true" x0.
+    Currently prefers JAXOpt over COPT implementation.
     """
     gaps = jnp.linspace(1, max_gap, n_samples)
     sigmasqs = jnp.linspace(0.01, max_sigmasq, n_samples)
@@ -113,12 +126,20 @@ def plot_param_sweep(
 
     params = jnp.asarray(list(product(sigmasqs, gaps)))
 
-    ## COPT
+    # COPT, true i
     # mu0s = []
-    # means, x0s = vmap(stagger_data, in_axes=(0, None, None))(gaps, num_timesteps, num_features)
+    # means, _ = vmap(stagger_data, in_axes=(0, None, None))(gaps, num_timesteps, num_features)
+
+    # # the true changepoint
+    # x0 = jnp.concatenate(
+    #     (
+    #         -1 * jnp.ones((num_timesteps // 2, num_features)),
+    #         jnp.ones((num_timesteps // 2, num_features)),
+    #     )
+    # )
 
     # for sigmasq in sigmasqs:
-    #     for mean, x0 in zip(means, x0s):
+    #     for mean in means:
     #         result = pgd(x0, mean, mu_pri, sigma_pri**2, sigmasq, hazard_rates)
     #         mu0s.append(result.x)
 
