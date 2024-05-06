@@ -1,6 +1,3 @@
-from functools import partial
-
-import jax
 import click
 from scipy import stats
 import jax.numpy as jnp
@@ -14,7 +11,7 @@ from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 
 import bayes_ca.inference as core
-from bayes_ca.prox_grad import pgd, pgd_jaxopt
+from bayes_ca.prox_grad import pgd_jaxopt
 from bayes_ca.data import naturalistic_data
 from bayes_ca._utils import _safe_handling_params
 
@@ -132,6 +129,14 @@ def main(seed, data_dir, mu_pri, sigmasq_pri, sigmasq_subj, hazard_prob, max_dur
 
     # create train split and initialize globals
     global_means = jnp.mean(pca_train, axis=0)
+
+    _, _, _, smooth_means = core.gaussian_cp_smoother(
+        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_obs
+    )
+    plt.plot(global_means, label=f"1D input data after FactorAnalysis")
+    plt.plot(smooth_means, label="smoothed means")
+    plt.legend()
+    plt.show()
 
     lps = []
     for _ in progress_bar(range(2)):
