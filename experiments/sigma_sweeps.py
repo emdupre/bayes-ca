@@ -5,6 +5,7 @@ import click
 import jax.numpy as jnp
 from jax import jit, vmap
 import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
 from tensorflow_probability.substrates import jax as tfp
 
 from bayes_ca.prox_grad import pgd, pgd_jaxopt
@@ -61,6 +62,7 @@ def sample_mu0_true_x0(
 
 
 def plot_mu0s(
+    ax,
     mu_pri,
     sigma_pri,
     num_timesteps,
@@ -91,23 +93,17 @@ def plot_mu0s(
         results = pgd(x0, m, mu_pri, sigma_pri**2, sigma_val**2, hazard_rates)
         mu0s.append(results.x)
 
-    fig = plt.figure()
-    ax = plt.subplot(111)
     ax.set_title(f"sampled $\mu_0$ at $\sigma_{{subj}}$ = {sigma_val}")
-    sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis)
     colors = plt.cm.viridis(jnp.linspace(0, 1, n_samples))
     for i, mu0 in enumerate(mu0s):
         p = ax.plot(mu0, c=colors[i], alpha=0.8, label=f"sampled $\mu_0$, {gaps[i]} stagger")
 
-    cbar = fig.colorbar(sm, ax=ax, location="right")
-    cbar.set_ticks(ticks=[0, 0.5, 1], labels=[0, 50 // 2, 50])
-    cbar.ax.get_yaxis().labelpad = 15
-    cbar.ax.set_ylabel("stagger distance", rotation=270)
-
-    return fig
+    return ax
 
 
 def plot_param_sweep(
+    ax,
+    vline,
     mu_pri,
     sigma_pri,
     num_timesteps,
@@ -168,17 +164,18 @@ def plot_param_sweep(
     hazard_prob = hazard_rates[0]
     beta = -jnp.log(hazard_prob / (1 - hazard_prob))
 
-    fig, ax = plt.subplots()
-    ax.plot(sigmas, gap_threshold)
+    ax.plot(sigmas, gap_threshold, c="#bc3978")
+    ax.plot(sigmasqs, [(beta * sigmasq) for sigmasq in sigmasqs], c="#fa7f5e")
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
+    ax.axvline(x=vline, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
 
     ax.set_xlabel("$\sigma_{{subj}}$ value", labelpad=10)
     ax.set_ylabel("Stagger distance", labelpad=15)
     ax.spines[["left", "top"]].set_visible(False)
     ax.set_title(f"Transition from 1 to 2 changepoints")
 
-    return fig
+    return ax
 
 
 @click.command()
@@ -196,7 +193,38 @@ def main(mu_pri, sigma_pri, sigma, hazard_prob, num_features, num_timesteps, x0_
     hazard_rates = hazard_prob * jnp.ones(max_duration)
     hazard_rates = hazard_rates.at[-1].set(1.0)
 
-    fig1 = plot_mu0s(
+    fig, axs = plt.subplot_mosaic(
+        [["a)"], ["b)"]], layout="constrained", sharex=True, figsize=(8, 6)
+    )
+    for label, ax in axs.items():
+        # label physical distance to the left and up:
+        trans = mtransforms.ScaledTranslation(-40 / 72, 7 / 72, fig.dpi_scale_trans)
+        ax.text(
+            0.0,
+            1.0,
+            label,
+            transform=ax.transAxes + trans,
+            fontsize="xx-large",
+            va="bottom",
+            fontfamily="sans-serif",
+            fontweight="bold",
+        )
+
+    panel_a = plot_param_sweep(
+        axs["a)"],
+        sigma,
+        mu_pri,
+        sigma_pri,
+        num_timesteps,
+        num_features,
+        hazard_rates,
+        max_gap=50,
+        max_sigmasq=9.0,
+        n_samples=50,
+    )
+
+    panel_b = plot_mu0s(
+        axs["b)"],
         mu_pri,
         sigma_pri,
         num_timesteps,
@@ -207,16 +235,11 @@ def main(mu_pri, sigma_pri, sigma, hazard_prob, num_features, num_timesteps, x0_
         n_samples=25,
     )
 
-    fig2 = plot_param_sweep(
-        mu_pri,
-        sigma_pri,
-        num_timesteps,
-        num_features,
-        hazard_rates,
-        max_gap=50,
-        max_sigmasq=9.0,
-        n_samples=50,
-    )
+    sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis)
+    cbar = fig.colorbar(sm, ax=ax[1], location="right")
+    cbar.set_ticks(ticks=[0, 0.5, 1], labels=[0, 50 // 2, 50])
+    cbar.ax.get_yaxis().labelpad = 15
+    cbar.ax.set_ylabel("stagger distance", rotation=270)
 
     plt.show()
 
