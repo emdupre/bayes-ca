@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import click
 import jax.random as jr
 import jax.numpy as jnp
@@ -97,30 +95,6 @@ def stagger_data(key, sigmasq_obs, min_val=-0.40, mid_val=0.30, max_val=0.80):
     )
 
 
-def plot_gibbs_sampled(
-    ax, seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, hazard_rates, n_iters=100
-):
-    """ """
-    # sample data for given obs. noise
-    key = jr.PRNGKey(seed=seed)
-
-    _, obs = stagger_data(key, sigma_obs**2)
-    x0 = jnp.mean(obs, axis=0)
-
-    lps = []
-    for _ in progress_bar(range(n_iters)):
-        this_key, key = jr.split(key)
-        global_means, subj_means, train_lp = step(
-            this_key, obs, sigma_obs**2, x0, sigma_subj**2, mu_pri, sigma_pri**2, hazard_rates
-        )
-        lps.append(train_lp)
-
-    for i in range(3):
-        ax.plot(subj_means[i], label=f"sampled $\mu^n$ for subj. {i + 1}")[0]
-    ax.plot(global_means)
-    return ax
-
-
 @click.command()
 @click.option("--seed", default=0, help="")
 @click.option("--mu_pri", default=0.0, help="")
@@ -140,17 +114,21 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
     signals, obs = stagger_data(key, sigma_obs**2)
     x0 = jnp.mean(obs, axis=0)
 
-    my_file = Path("/path/to/file")
-    if my_file.is_file():
-        pass
-    else:
-        lps = []
-        for _ in progress_bar(range(7500)):
-            this_key, key = jr.split(key)
-            global_means, subj_means, train_lp = step(
-                this_key, obs, 0.25**2, x0, 2.0**2, 0.0, 1.0**2, hazard_rates
-            )
-            lps.append(train_lp)
+    lps = []
+
+    for _ in progress_bar(range(7500)):  # approx 6h run time
+        this_key, key = jr.split(key)
+        global_means, subj_means, train_lp = step(
+            this_key,
+            obs,
+            sigmasq_obs=0.25**2,
+            global_means=x0,
+            sigmasq_subj=2.0**2,
+            mu_pri=0.0,
+            sigmasq_pri=1.0**2,
+            hazard_rates=hazard_rates,
+        )
+        lps.append(train_lp)
 
     _, _, transition_probs, _ = core.gaussian_cp_smoother(
         global_means, hazard_rates, mu_pri, sigma_pri**2, sigma_subj**2
@@ -161,7 +139,8 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
         sharex=True,
         sharey=True,
         layout="constrained",
-        # dpi=300,
+        dpi=300,
+        figsize=(4.5, 3),
     )
     fig.supxlabel("Time")
 
@@ -174,17 +153,17 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
         zip(
             [axs["A"], axs["B"], axs["C"]],
             ["#59B3A9", "#4298B5", "#007C92"],
-            ["$\mu_{n_1}$", "$\mu_{n_2}$", "$\mu_{n_3}$"],
+            ["$\mu^{n_1}$", "$\mu^{n_2}$", "$\mu^{n_3}$"],
         )
     ):
-        ax.plot(signals[i], c=c)
-        ax.plot(obs[i], ".", color=c, alpha=0.2)
+        ax.plot(signals[i], c=c, alpha=0.5)
+        ax.plot(obs[i], ".", color=c, alpha=0.9, markersize=0.9)
         ax.set_title(title, size="x-large")
 
     axs["A"].text(
         0.0,
         0.5,
-        "True Values",
+        "True",
         transform=(
             axs["A"].transAxes + ScaledTranslation(-50 / 72, +2 / 72, fig.dpi_scale_trans)
         ),
@@ -192,8 +171,8 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
         va="center",
         rotation=90,
     )
-    axs["D"].plot(jnp.average(signals, axis=0), ls="-.", c="#175E54")
-    axs["D"].set_title("$\mu_0$", size="x-large")
+    axs["D"].plot(jnp.average(signals, axis=0), ls=(0, (5, 1)), c="#7F7776")
+    axs["D"].set_title("$\mu^0$", size="x-large")
 
     for i, (ax, c) in enumerate(
         zip([axs["E"], axs["F"], axs["G"]], ["#017E7C", "#016895", "#006B81"])
@@ -203,7 +182,7 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
     axs["E"].text(
         0.0,
         0.5,
-        "Sampled Values",
+        "Sampled",
         transform=(
             axs["E"].transAxes + ScaledTranslation(-50 / 72, +2 / 72, fig.dpi_scale_trans)
         ),
@@ -211,19 +190,22 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
         va="center",
         rotation=90,
     )
-    axs["H"].plot(global_means, c="#014240")
+    axs["H"].plot(global_means, c="#544948")
+    plt.savefig("sampled_means.png", format="png", transparent=True)
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(layout="constrained", dpi=300, figsize=(3.5, 3))
     ax.spines[["left", "top"]].set_visible(False)
     ax.get_yaxis().set_visible(False)
+    ax.set_xlabel("Time", size="large")
     ax.imshow(jnp.log(transition_probs.T), aspect="auto", origin="lower", cmap="viridis")
-    ax.set_title("Transition probabilities")
+    ax.set_title("Transition probabilities", size="large")
 
     sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis)
     cbar = fig.colorbar(sm, ax=ax, location="right")
     cbar.set_ticks(ticks=[0, 0.5, 1], labels=[0.0, 0.5, 1.0])
     cbar.ax.get_yaxis().labelpad = 15
+    plt.savefig("Transition_probabilities.png", format="png", transparent=True)
 
     plt.show()
 
-    pass
+    return
