@@ -43,3 +43,6 @@ line-length = 98
 [tool.setuptools]
 packages = ["bayes_ca"]
 zip-safe = false
+
+[tool.setuptools.package-data]
+bayes_ca = ["data/*.npy"]

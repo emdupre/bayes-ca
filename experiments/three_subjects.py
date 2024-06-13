@@ -1,3 +1,5 @@
+from importlib.resources import files
+
 import click
 import jax.random as jr
 import jax.numpy as jnp
@@ -7,6 +9,7 @@ from fastprogress import progress_bar
 from matplotlib.transforms import ScaledTranslation
 from tensorflow_probability.substrates import jax as tfp
 
+from bayes_ca import data
 import bayes_ca.inference as core
 from bayes_ca.prox_grad import pgd_jaxopt
 
@@ -103,7 +106,8 @@ def stagger_data(key, sigmasq_obs, min_val=-0.40, mid_val=0.30, max_val=0.80):
 @click.option("--sigma_obs", default=0.25, help="")
 @click.option("--num_timesteps", default=300, help="")
 @click.option("--hazard_prob", default=0.01, help="")
-def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_prob):
+@click.option("--rerun", default=False, help="Whether to re-run the full Gibbs sampling")
+def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_prob, rerun):
     """ """
     # hardcoded params
     max_duration = num_timesteps
@@ -114,21 +118,26 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
     signals, obs = stagger_data(key, sigma_obs**2)
     x0 = jnp.mean(obs, axis=0)
 
-    lps = []
+    if rerun:
+        lps = []
 
-    for _ in progress_bar(range(7500)):  # approx 6h run time
-        this_key, key = jr.split(key)
-        global_means, subj_means, train_lp = step(
-            this_key,
-            obs,
-            sigmasq_obs=0.25**2,
-            global_means=x0,
-            sigmasq_subj=2.0**2,
-            mu_pri=0.0,
-            sigmasq_pri=1.0**2,
-            hazard_rates=hazard_rates,
-        )
-        lps.append(train_lp)
+        for _ in progress_bar(range(7500)):  # approx 6h run time
+            this_key, key = jr.split(key)
+            global_means, subj_means, train_lp = step(
+                this_key,
+                obs,
+                sigmasq_obs=0.25**2,
+                global_means=x0,
+                sigmasq_subj=2.0**2,
+                mu_pri=0.0,
+                sigmasq_pri=1.0**2,
+                hazard_rates=hazard_rates,
+            )
+            lps.append(train_lp)
+    else:
+        global_means = jnp.load(files(data) / "global_means_7500itr.npy")
+        subj_means = jnp.load(files(data) / "subj_means_7500itr.npy")
+        lps = jnp.load(files(data) / "lps_7500itr.npy")
 
     _, _, transition_probs, _ = core.gaussian_cp_smoother(
         global_means, hazard_rates, mu_pri, sigma_pri**2, sigma_subj**2
@@ -209,3 +218,7 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
     plt.show()
 
     return
+
+
+if __name__ == "__main__":
+    main()
