@@ -387,7 +387,7 @@ sigmasq_obs = 0.15**2
 # set underlying means and generate observations for first subplot
 true_means = jnp.concatenate(
     (
-        jnp.ones((5, 1)) * -0.40,
+        jnp.ones((5, 1)) * -0.50,
         jnp.ones((7, 1)) * 0.30,
         jnp.ones((3, 1)) * 0.80,
     )
@@ -397,7 +397,7 @@ true_means = jnp.concatenate(
 this_key, key = jr.split(key)
 signal_three = jnp.concatenate(
     (
-        jnp.ones((12, 1)) * -0.05,
+        jnp.ones((12, 1)) * -0.1,
         jnp.ones((3, 1)) * 0.80,
     )
 )
@@ -421,13 +421,14 @@ fig.supxlabel("$t$", fontsize="x-large", ha="right", x=1.0)
 
 for label, ax in axs.items():
     # label physical distance to the left and up:
-    trans = mtransforms.ScaledTranslation(-40 / 72, 7 / 72, fig.dpi_scale_trans)
+    trans = mtransforms.ScaledTranslation(-60 / 72, 7 / 72, fig.dpi_scale_trans)
     ax.text(
         0.0,
         1.0,
         label,
         transform=ax.transAxes + trans,
-        fontsize="xx-large",
+        # fontsize="xx-large",
+        fontsize=34,
         va="bottom",
         fontfamily="sans-serif",
         fontweight="bold",
@@ -505,7 +506,7 @@ lc = mc.LineCollection(
 ax3.add_collection(lc)
 # ax3.axvline(x=5.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
 ax3.axvline(x=12.5, color="black", linestyle=(5, (10, 3)), linewidth=0.75)
-ax3.set_ylabel(ylabel="$y_t$", labelpad=5.0, fontsize="x-large", rotation="horizontal")
+ax3.set_ylabel(ylabel="$y^n_t$", labelpad=5.0, fontsize="x-large", rotation="horizontal")
 ax3.yaxis.set_tick_params(labelleft=False)
 ax3.set_yticks([])
 ax3.yaxis.set_label_coords(-0.07, 0.85)
@@ -520,4 +521,4 @@ ax3.plot(0.75, 0, "vk", transform=ax3.get_xaxis_transform(), clip_on=False)
 # render and show
 # plt.tight_layout()
 # plt.show()
-plt.savefig("schematic-four.svg")
+plt.savefig("schematic-four.png", transparent=True)
