@@ -374,3 +374,28 @@ def pgd_jaxopt(
         hazard_rates,
     )
     return result
+
+
+def prox_update_global_means(
+    stepsize, global_means, subj_means, sigmasq_subj, mu_pri, sigmasq_pri, hazard_rates
+):
+    """
+    Original proximal gradient implementation with fixed step size.
+    Restored from experiments/hierarchical_stagger_jump.ipynb in commit
+    0f1aff2cdb408afee59cb875cc032fbd55619ce3
+    """
+    _, num_features = global_means.shape
+    # Use exponential family magic to compute gradient of the
+    # smooth part of the objective (not including the CP prior)
+    _, _, _, expected_subj_means = core.gaussian_cp_smoother(
+        global_means, hazard_rates, mu_pri, sigmasq_pri, sigmasq_subj
+    )
+    g = 1 / sigmasq_subj * jnp.sum(subj_means - expected_subj_means, axis=0)  # sum over subjects
+
+    # Compute the proximal update by taking a step in the direction of the gradient
+    # and using the posterior mode to find the new global states
+    effective_emissions = global_means + stepsize * g
+    new_global_means = core.gaussian_cp_posterior_mode(
+        effective_emissions, hazard_rates, mu_pri, sigmasq_pri, jnp.repeat(stepsize, num_features)
+    )[1]
+    return new_global_means, g
