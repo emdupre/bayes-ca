@@ -45,10 +45,15 @@ def _condition_on(
     Returns:
         probs(k): posterior for state k
     """
-    ll_max = ll.max()
-    new_probs = probs * jnp.exp(ll - ll_max)
-    new_probs, norm = _normalize(new_probs)
-    log_norm = jnp.log(norm) + ll_max
+    from jax.scipy.special import logsumexp
+
+    new_lp = jnp.log(probs) + ll  # (-9449, -inf, ..., -inf)
+    log_norm = logsumexp(new_lp)  # -9449
+    new_probs = jnp.exp(new_lp - log_norm)  # exp(0, -inf, ..., -inf) = (1, 0, .., 0)
+    # ll_max = ll.max()
+    # new_probs = probs * jnp.exp(ll - ll_max)
+    # new_probs, norm = _normalize(new_probs)
+    # log_norm = jnp.log(norm) + ll_max
     return new_probs, log_norm
 
 
