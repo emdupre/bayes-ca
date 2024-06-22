@@ -172,7 +172,7 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
     axs["A"].text(
         0.0,
         0.5,
-        "True",
+        "Initial",
         transform=(
             axs["A"].transAxes + ScaledTranslation(-50 / 72, +2 / 72, fig.dpi_scale_trans)
         ),
@@ -180,8 +180,9 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
         va="center",
         rotation=90,
     )
-    axs["D"].plot(jnp.average(signals, axis=0), ls=(0, (5, 1)), c="#7F7776")
-    axs["D"].set_title("$\mu^0$", size="x-large")
+    axs["D"].plot(jnp.average(obs, axis=0), ls=(0, (5, 1)), c="#7F7776")
+    # axs["D"].plot(jnp.average(signals, axis=0), ls=(0, (5, 1)), c="#7F7776")
+    axs["D"].set_title("Group \n estimate", size="large")
 
     for i, (ax, c) in enumerate(
         zip([axs["E"], axs["F"], axs["G"]], ["#017E7C", "#016895", "#006B81"])
@@ -191,7 +192,7 @@ def main(seed, mu_pri, sigma_pri, sigma_subj, sigma_obs, num_timesteps, hazard_p
     axs["E"].text(
         0.0,
         0.5,
-        "Sampled",
+        "Recovered",
         transform=(
             axs["E"].transAxes + ScaledTranslation(-50 / 72, +2 / 72, fig.dpi_scale_trans)
         ),
