@@ -1,6 +1,7 @@
 # Bayes-CA
 
-Code for Bayesian Changepoint Analysis, with applications to fMRI data.
+Code for Bayesian Changepoint Analysis, intended for applications to fMRI data.
+Note that the current code requires low-dimensional data ; for real data applications, we assume that this decomposition has been handled separately.
 
 ## Recommended environment
 
